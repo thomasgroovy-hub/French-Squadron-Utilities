@@ -16,7 +16,7 @@ import {
 } from 'discord.js';
 import { readFileSync } from 'node:fs';
 import { google } from 'googleapis';
-import { randomUUID } from 'node:crypto';
+import { createPrivateKey, randomUUID } from 'node:crypto';
 
 const GUILD_ID = '1454217001626243288';
 const LOG_CHANNEL_ID = '1472309654729261287';
@@ -59,6 +59,16 @@ function parseServiceAccountJson(value) {
   return typeof firstParse === 'string' ? JSON.parse(firstParse) : firstParse;
 }
 
+function normalizePrivateKey(privateKey) {
+  return privateKey
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\\+r\\+n/g, '\n')
+    .replace(/\\+n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .concat('\n');
+}
+
 function getSheetsClient() {
   const fileVariable = process.env.GOOGLE_SERVICE_ACCOUNT_FILE?.trim();
   const jsonFromEnvironment = process.env.GOOGLE_SERVICE_ACCOUNT_JSON
@@ -68,18 +78,24 @@ function getSheetsClient() {
 
   let credentials;
   try {
-    credentials = jsonFromEnvironment
-      ? parseServiceAccountJson(jsonFromEnvironment)
-      : parseServiceAccountJson(readFileSync(process.env.GOOGLE_SERVICE_ACCOUNT_FILE, 'utf8'));
-
-    // Railway/raw-editor values can preserve newlines as the two literal
-    // characters "\\n". OpenSSL requires actual newlines in PEM keys.
-    if (typeof credentials.private_key === 'string') {
-      credentials.private_key = credentials.private_key.replace(/\\{1,2}n/g, '\n');
+    if (process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY && process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
+      credentials = {
+        type: 'service_account',
+        project_id: process.env.GOOGLE_SERVICE_ACCOUNT_PROJECT_ID,
+        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        private_key: process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
+      };
+    } else {
+      credentials = jsonFromEnvironment
+        ? parseServiceAccountJson(jsonFromEnvironment)
+        : parseServiceAccountJson(readFileSync(process.env.GOOGLE_SERVICE_ACCOUNT_FILE, 'utf8'));
     }
+
+    credentials.private_key = normalizePrivateKey(credentials.private_key);
+    createPrivateKey(credentials.private_key);
   } catch {
     throw new Error(
-      'Google credentials are invalid. On Railway, use GOOGLE_SERVICE_ACCOUNT_JSON with the full one-line JSON value.',
+      'Google credentials are invalid. On Railway, use GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.',
     );
   }
 
