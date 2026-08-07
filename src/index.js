@@ -157,18 +157,14 @@ function transcriptFor(message) {
   return parts.join('\n\n');
 }
 
-function splitText(text, maximumLength = 1800) {
-  const chunks = [];
-  let remaining = text;
-
-  while (remaining.length > maximumLength) {
-    let splitAt = remaining.lastIndexOf('\n', maximumLength);
-    if (splitAt < 1) splitAt = maximumLength;
-    chunks.push(remaining.slice(0, splitAt));
-    remaining = remaining.slice(splitAt);
-  }
-  chunks.push(remaining || '(sans texte)');
-  return chunks;
+// Wraps text in a fenced code block, truncating so a single embed field
+// (1024 char limit) never overflows even with long messages/attachments.
+function codeBlock(text, maxLength = 950) {
+  const safeText = text && text.length > 0 ? text : '(sans texte)';
+  const truncated = safeText.length > maxLength
+    ? `${safeText.slice(0, maxLength)}\n… (tronqué)`
+    : safeText;
+  return `\`\`\`\n${truncated}\n\`\`\``;
 }
 
 async function sendTranscriptLog(kind, message, previousContent) {
@@ -180,29 +176,41 @@ async function sendTranscriptLog(kind, message, previousContent) {
   }
 
   const author = message.author;
-  const header = [
-    `**${kind}**`,
-    `Auteur : ${author?.tag ?? 'Inconnu'} (${author?.id ?? 'inconnu'})`,
-    `Salon source : <#${message.channelId}> (${message.channelId})`,
-    `Message ID : ${message.id}`,
-    `Date : <t:${Math.floor(message.createdTimestamp / 1000)}:F>`,
-  ].join('\n');
+  const timestamp = Math.floor(message.createdTimestamp / 1000);
+  const content = transcriptFor(message);
 
-  await logChannel.send({ content: header, allowedMentions: { parse: [] } });
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setAuthor({
+      name: author?.tag ?? 'Inconnu',
+      iconURL: author?.displayAvatarURL?.(),
+    })
+    .setTitle(kind)
+    .setDescription(`[Aller au message](${message.url})`)
+    .setFooter({ text: 'French Squadron Utilities' })
+    .setTimestamp(message.createdTimestamp);
+
+  const metadataFields = [
+    { name: 'Auteur', value: `${author?.tag ?? 'Inconnu'} (${author?.id ?? '—'})`, inline: true },
+    { name: 'Salon source', value: `<#${message.channelId}>`, inline: true },
+    { name: 'Message ID', value: message.id ?? '—', inline: true },
+    { name: 'Date', value: `<t:${timestamp}:F>`, inline: true },
+  ];
 
   if (previousContent !== undefined) {
-    await logChannel.send({ content: '**Avant :**', allowedMentions: { parse: [] } });
-    for (const chunk of splitText(previousContent || '(sans texte)')) {
-      await logChannel.send({ content: chunk, allowedMentions: { parse: [] } });
-    }
-    await logChannel.send({ content: '**Après :**', allowedMentions: { parse: [] } });
+    // For edits, include both previous and current content in the embed as separate fields.
+    embed.addFields(...metadataFields);
+    embed.addFields(
+      { name: 'Avant', value: codeBlock(previousContent), inline: false },
+      { name: 'Après', value: codeBlock(content), inline: false },
+    );
   } else {
-    await logChannel.send({ content: '**Contenu :**', allowedMentions: { parse: [] } });
+    // For new messages, include metadata + content in the same embed.
+    embed.addFields(...metadataFields);
+    embed.addFields({ name: 'Contenu', value: codeBlock(content), inline: false });
   }
 
-  for (const chunk of splitText(transcriptFor(message))) {
-    await logChannel.send({ content: chunk, allowedMentions: { parse: [] } });
-  }
+  await logChannel.send({ embeds: [embed], allowedMentions: { parse: [] } });
 }
 
 async function handleInteraction(interaction) {
