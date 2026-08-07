@@ -71,6 +71,12 @@ function getSheetsClient() {
     credentials = jsonFromEnvironment
       ? parseServiceAccountJson(jsonFromEnvironment)
       : parseServiceAccountJson(readFileSync(process.env.GOOGLE_SERVICE_ACCOUNT_FILE, 'utf8'));
+
+    // Railway/raw-editor values can preserve newlines as the two literal
+    // characters "\\n". OpenSSL requires actual newlines in PEM keys.
+    if (typeof credentials.private_key === 'string') {
+      credentials.private_key = credentials.private_key.replace(/\\{1,2}n/g, '\n');
+    }
   } catch {
     throw new Error(
       'Google credentials are invalid. On Railway, use GOOGLE_SERVICE_ACCOUNT_JSON with the full one-line JSON value.',
