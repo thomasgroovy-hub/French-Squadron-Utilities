@@ -34,6 +34,9 @@ const commands = [
   new SlashCommandBuilder()
     .setName('ping')
     .setDescription('Mesure le temps de réponse du bot.'),
+  new SlashCommandBuilder()
+    .setName('sheet')
+    .setDescription('Donne le lien au Google Sheet.'),
 ];
 
 for (const key of ['DISCORD_TOKEN', 'DISCORD_APPLICATION_ID', 'GOOGLE_SHEET_ID']) {
@@ -315,6 +318,21 @@ async function handleInteraction(interaction) {
     const sentAt = Date.now();
     await interaction.reply({ content: 'Pong...', ephemeral: true });
     await interaction.editReply(`Pong ! Temps de réponse: ${Date.now() - sentAt} ms`);
+    return;
+  }
+
+  if (interaction.isChatInputCommand() && interaction.commandName === 'sheet') {
+    if (!hasAuthorizedRole(interaction.member)) {
+      await interaction.reply({ content: "Tu n'as pas le rôle nécessaire pour utiliser cette commande.", ephemeral: true });
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('Lien au sheet')
+      .setDescription('https://docs.google.com/spreadsheets/d/1B3oUispXymkMId_3n38kSFSp8Ygq-A5Sr3bJb_BSKIA/edit?usp=sharing');
+
+    await interaction.reply({ embeds: [embed] });
     return;
   }
 
