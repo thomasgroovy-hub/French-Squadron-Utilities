@@ -21,6 +21,14 @@ const GUILD_ID = '1454217001626243288';
 const AUTHORIZED_ROLE_ID = '1535269258701963284';
 const TIMEZONE_INPUT_ID = 'timezone';
 const pendingBloodlineAdds = new Map();
+const commands = [
+  new SlashCommandBuilder()
+    .setName('bloodline-add')
+    .setDescription('Ajoute un membre à la bloodline.'),
+  new SlashCommandBuilder()
+    .setName('ping')
+    .setDescription('Mesure le temps de réponse du bot.'),
+];
 
 const requiredConfiguration = [
   'DISCORD_TOKEN',
@@ -39,9 +47,6 @@ if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON && !process.env.GOOGLE_SERVICE_ACCO
 }
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-const command = new SlashCommandBuilder()
-  .setName('bloodline-add')
-  .setDescription('Ajoute un membre à la bloodline.');
 
 function hasAuthorizedRole(member) {
   if (!member) return false;
@@ -78,7 +83,7 @@ async function registerCommand() {
 
   await rest.put(
     Routes.applicationGuildCommands(process.env.DISCORD_APPLICATION_ID, GUILD_ID),
-    { body: [command.toJSON()] },
+    { body: commands.map((command) => command.toJSON()) },
   );
 }
 
@@ -113,6 +118,19 @@ async function handleInteraction(interaction) {
       components: [new ActionRowBuilder().addComponents(memberSelect)],
       ephemeral: true,
     });
+    return;
+  }
+
+  if (interaction.isChatInputCommand() && interaction.commandName === 'ping') {
+    const sentAt = Date.now();
+
+    await interaction.reply({
+      content: 'Pong...',
+      ephemeral: true,
+    });
+
+    const latency = Date.now() - sentAt;
+    await interaction.editReply(`Pong ! Temps de réponse: ${latency} ms`);
     return;
   }
 
