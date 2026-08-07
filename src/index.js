@@ -6,6 +6,7 @@ import {
   Events,
   GatewayIntentBits,
   ModalBuilder,
+  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -18,9 +19,11 @@ import { google } from 'googleapis';
 import { randomUUID } from 'node:crypto';
 
 const GUILD_ID = '1454217001626243288';
+const LOG_CHANNEL_ID = '1472309654729261287';
 const AUTHORIZED_ROLE_ID = '1535269258701963284';
 const TIMEZONE_INPUT_ID = 'timezone';
 const pendingBloodlineAdds = new Map();
+
 const commands = [
   new SlashCommandBuilder()
     .setName('bloodline-add')
@@ -30,76 +33,162 @@ const commands = [
     .setDescription('Mesure le temps de réponse du bot.'),
 ];
 
-const requiredConfiguration = [
-  'DISCORD_TOKEN',
-  'DISCORD_APPLICATION_ID',
-  'GOOGLE_SHEET_ID',
-];
-
-for (const key of requiredConfiguration) {
+for (const key of ['DISCORD_TOKEN', 'DISCORD_APPLICATION_ID', 'GOOGLE_SHEET_ID']) {
   if (!process.env[key]) {
-    throw new Error(`${key} is required. Add it to .env or your host's environment variables.`);
+    throw new Error(`${key} is required. Add it to .env or Railway variables.`);
   }
 }
 
-if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON && !process.env.GOOGLE_SERVICE_ACCOUNT_FILE) {
-  throw new Error('GOOGLE_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_ACCOUNT_JSON is required.');
-}
-
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+  partials: [Partials.Channel, Partials.Message],
+});
 
 function hasAuthorizedRole(member) {
   if (!member) return false;
-
-  if (Array.isArray(member.roles)) {
-    return member.roles.includes(AUTHORIZED_ROLE_ID);
-  }
-
+  if (Array.isArray(member.roles)) return member.roles.includes(AUTHORIZED_ROLE_ID);
   return member.roles.cache.has(AUTHORIZED_ROLE_ID);
 }
 
-function getSheetsClient() {
-  let credentials;
+function parseServiceAccountJson(value) {
+  const firstParse = JSON.parse(value);
+  return typeof firstParse === 'string' ? JSON.parse(firstParse) : firstParse;
+}
 
+function getSheetsClient() {
+  const fileVariable = process.env.GOOGLE_SERVICE_ACCOUNT_FILE?.trim();
+  const jsonFromEnvironment = process.env.GOOGLE_SERVICE_ACCOUNT_JSON
+    || ((fileVariable?.startsWith('{') || fileVariable?.startsWith('"'))
+      ? fileVariable
+      : undefined);
+
+  let credentials;
   try {
-    const credentialsJson = process.env.GOOGLE_SERVICE_ACCOUNT_FILE
-      ? readFileSync(process.env.GOOGLE_SERVICE_ACCOUNT_FILE, 'utf8')
-      : process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-    credentials = JSON.parse(credentialsJson);
+    credentials = jsonFromEnvironment
+      ? parseServiceAccountJson(jsonFromEnvironment)
+      : parseServiceAccountJson(readFileSync(process.env.GOOGLE_SERVICE_ACCOUNT_FILE, 'utf8'));
   } catch {
-    throw new Error('The configured Google service-account credentials are not valid JSON.');
+    throw new Error(
+      'Google credentials are invalid. On Railway, use GOOGLE_SERVICE_ACCOUNT_JSON with the full one-line JSON value.',
+    );
   }
 
   const auth = new google.auth.GoogleAuth({
     credentials,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
-
   return google.sheets({ version: 'v4', auth });
 }
 
-async function registerCommand() {
+async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
   await rest.put(
     Routes.applicationGuildCommands(process.env.DISCORD_APPLICATION_ID, GUILD_ID),
     { body: commands.map((command) => command.toJSON()) },
   );
 }
 
-client.once(Events.ClientReady, (readyClient) => {
-  console.log(`Connected as ${readyClient.user.tag}`);
-});
+async function findNextSheetRow(sheets, sheetTab) {
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `${sheetTab}!A:F`,
+  });
+  const rows = response.data.values ?? [];
+  let lastUsedRow = 1;
+
+  for (let index = 0; index < rows.length; index += 1) {
+    if (rows[index].some((value) => String(value).trim() !== '')) lastUsedRow = index + 1;
+  }
+
+  return Math.max(2, lastUsedRow + 1);
+}
+
+async function addBloodlineMember(pendingAdd, timezone) {
+  const sheets = getSheetsClient();
+  const sheetTab = process.env.GOOGLE_SHEET_TAB || 'Sheet1';
+  const row = await findNextSheetRow(sheets, sheetTab);
+
+  // Column A ("placeholder") is deliberately never written by the bot.
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `${sheetTab}!C${row}:F${row}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: {
+      values: [[pendingAdd.targetDisplayName, pendingAdd.targetUsername, pendingAdd.targetId, timezone]],
+    },
+  });
+}
+
+function transcriptFor(message) {
+  const attachments = [...message.attachments.values()]
+    .map((attachment) => `${attachment.name ?? 'Pièce jointe'}: ${attachment.url}`);
+  const stickers = [...message.stickers.values()]
+    .map((sticker) => sticker.name);
+  const parts = [message.content || '(sans texte)'];
+
+  if (attachments.length) parts.push(`Pièces jointes:\n${attachments.join('\n')}`);
+  if (stickers.length) parts.push(`Stickers: ${stickers.join(', ')}`);
+  return parts.join('\n\n');
+}
+
+function splitText(text, maximumLength = 1800) {
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > maximumLength) {
+    let splitAt = remaining.lastIndexOf('\n', maximumLength);
+    if (splitAt < 1) splitAt = maximumLength;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+  }
+  chunks.push(remaining || '(sans texte)');
+  return chunks;
+}
+
+async function sendTranscriptLog(kind, message, previousContent) {
+  if (!message.inGuild() || message.guildId !== GUILD_ID || message.channelId === LOG_CHANNEL_ID || message.author?.bot) return;
+
+  const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+  if (!logChannel?.isTextBased() || !logChannel.isSendable()) {
+    throw new Error(`The log channel ${LOG_CHANNEL_ID} is unavailable or the bot cannot send messages there.`);
+  }
+
+  const author = message.author;
+  const header = [
+    `**${kind}**`,
+    `Auteur : ${author?.tag ?? 'Inconnu'} (${author?.id ?? 'inconnu'})`,
+    `Salon source : <#${message.channelId}> (${message.channelId})`,
+    `Message ID : ${message.id}`,
+    `Date : <t:${Math.floor(message.createdTimestamp / 1000)}:F>`,
+  ].join('\n');
+
+  await logChannel.send({ content: header, allowedMentions: { parse: [] } });
+
+  if (previousContent !== undefined) {
+    await logChannel.send({ content: '**Avant :**', allowedMentions: { parse: [] } });
+    for (const chunk of splitText(previousContent || '(sans texte)')) {
+      await logChannel.send({ content: chunk, allowedMentions: { parse: [] } });
+    }
+    await logChannel.send({ content: '**Après :**', allowedMentions: { parse: [] } });
+  } else {
+    await logChannel.send({ content: '**Contenu :**', allowedMentions: { parse: [] } });
+  }
+
+  for (const chunk of splitText(transcriptFor(message))) {
+    await logChannel.send({ content: chunk, allowedMentions: { parse: [] } });
+  }
+}
 
 async function handleInteraction(interaction) {
   if (interaction.guildId !== GUILD_ID) return;
 
   if (interaction.isChatInputCommand() && interaction.commandName === 'bloodline-add') {
     if (!hasAuthorizedRole(interaction.member)) {
-      await interaction.reply({
-        content: 'Tu n’as pas le rôle nécessaire pour utiliser cette commande.',
-        ephemeral: true,
-      });
+      await interaction.reply({ content: 'Tu n’as pas le rôle nécessaire pour utiliser cette commande.', ephemeral: true });
       return;
     }
 
@@ -108,7 +197,6 @@ async function handleInteraction(interaction) {
       .setPlaceholder('Sélectionne le membre à ajouter')
       .setMinValues(1)
       .setMaxValues(1);
-
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setDescription('Qui veux-tu ajouter à la bloodline ?');
@@ -123,14 +211,8 @@ async function handleInteraction(interaction) {
 
   if (interaction.isChatInputCommand() && interaction.commandName === 'ping') {
     const sentAt = Date.now();
-
-    await interaction.reply({
-      content: 'Pong...',
-      ephemeral: true,
-    });
-
-    const latency = Date.now() - sentAt;
-    await interaction.editReply(`Pong ! Temps de réponse: ${latency} ms`);
+    await interaction.reply({ content: 'Pong...', ephemeral: true });
+    await interaction.editReply(`Pong ! Temps de réponse: ${Date.now() - sentAt} ms`);
     return;
   }
 
@@ -168,7 +250,6 @@ async function handleInteraction(interaction) {
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
       .setMaxLength(100);
-
     modal.addComponents(new ActionRowBuilder().addComponents(timezoneInput));
     await interaction.showModal(modal);
     return;
@@ -179,52 +260,51 @@ async function handleInteraction(interaction) {
   const requestId = interaction.customId.replace('bloodline-add:timezone:', '');
   const pendingAdd = pendingBloodlineAdds.get(requestId);
   pendingBloodlineAdds.delete(requestId);
-
-  if (
-    !pendingAdd
-    || pendingAdd.expiresAt < Date.now()
-    || interaction.user.id !== pendingAdd.requestingUserId
-    || !hasAuthorizedRole(interaction.member)
-  ) {
+  if (!pendingAdd || pendingAdd.expiresAt < Date.now() || interaction.user.id !== pendingAdd.requestingUserId || !hasAuthorizedRole(interaction.member)) {
     await interaction.reply({ content: 'Cette demande ne t’appartient pas.', ephemeral: true });
     return;
   }
 
   await interaction.deferReply();
-
   try {
     const timezone = interaction.fields.getTextInputValue(TIMEZONE_INPUT_ID).trim();
-    const sheets = getSheetsClient();
-    const sheetTab = process.env.GOOGLE_SHEET_TAB || 'Sheet1';
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.GOOGLE_SHEET_ID,
-      range: `${sheetTab}!C:F`,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: {
-        values: [[pendingAdd.targetDisplayName, pendingAdd.targetUsername, pendingAdd.targetId, timezone]],
-      },
-    });
-
+    await addBloodlineMember(pendingAdd, timezone);
     const timestamp = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
       .setTitle('Membre ajouté à la bloodline')
       .setDescription(
         `<@${pendingAdd.targetId}> a bien été ajouté à la bloodline et sur le Google Sheet\n\n-# <t:${timestamp}:F> - French Squadron Utilities`,
       );
-
     await interaction.editReply({ embeds: [embed] });
   } catch (error) {
     console.error('Unable to add bloodline member:', error);
-    await interaction.editReply('Impossible d’ajouter le membre au Google Sheet. Vérifie la configuration du bot.');
+    await interaction.editReply('Impossible d’ajouter le membre au Google Sheet. Vérifie la configuration Google du bot.');
   }
 }
 
-client.on(Events.InteractionCreate, (interaction) => {
-  void handleInteraction(interaction).catch((error) => {
-    console.error('Unable to handle interaction:', error);
-  });
+client.once(Events.ClientReady, (readyClient) => {
+  console.log(`Connected as ${readyClient.user.tag}`);
+  void registerCommands()
+    .then(() => console.log(`Commands registered for guild ${GUILD_ID}`))
+    .catch((error) => console.error('Unable to register commands (the bot remains online):', error));
 });
 
-await registerCommand();
+client.on(Events.InteractionCreate, (interaction) => {
+  void handleInteraction(interaction).catch((error) => console.error('Unable to handle interaction:', error));
+});
+
+client.on(Events.MessageCreate, (message) => {
+  void sendTranscriptLog('Message envoyé', message).catch((error) => console.error('Unable to log a message:', error));
+});
+
+client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
+  void (async () => {
+    const resolvedMessage = newMessage.partial ? await newMessage.fetch() : newMessage;
+    await sendTranscriptLog('Message modifié', resolvedMessage, oldMessage.partial ? undefined : oldMessage.content);
+  })().catch((error) => console.error('Unable to log a message update:', error));
+});
+
+client.on(Events.Error, (error) => console.error('Discord client error:', error));
+process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
+
 await client.login(process.env.DISCORD_TOKEN);
