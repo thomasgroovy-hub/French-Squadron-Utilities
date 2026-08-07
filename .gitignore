@@ -1,2 +1,4 @@
 node_modules/
 .env
+.env.blank
+google-service-account.json
