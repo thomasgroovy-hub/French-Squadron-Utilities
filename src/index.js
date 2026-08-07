@@ -20,8 +20,11 @@ import { createPrivateKey, randomUUID } from 'node:crypto';
 
 const GUILD_ID = '1454217001626243288';
 const LOG_CHANNEL_ID = '1472309654729261287';
+const BLOODLINE_CHANNEL_ID = '1472283879695192179';
 const AUTHORIZED_ROLE_ID = '1535269258701963284';
 const TIMEZONE_INPUT_ID = 'timezone';
+const BLOODLINE_MAX_MEMBERS = 15;
+const BLOODLINE_CONTACT_TEXT = 'Contactez ui3349';
 const pendingBloodlineAdds = new Map();
 
 const commands = [
@@ -62,7 +65,7 @@ function parseServiceAccountJson(value) {
 function normalizePrivateKey(privateKey) {
   return privateKey
     .trim()
-    .replace(/^["']+|["']+$/g, '')
+    .replace(/^['"]+|['"]+$/g, '')
     .replace(/\\+r\\+n/g, '\n')
     .replace(/\\+n/g, '\n')
     .replace(/\r\n/g, '\n')
@@ -117,7 +120,7 @@ async function registerCommands() {
 async function findNextSheetRow(sheets, sheetTab) {
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `${sheetTab}!A:F`,
+    range: `${sheetTab}!A:G`,
   });
   const rows = response.data.values ?? [];
   let lastUsedRow = 1;
@@ -133,16 +136,86 @@ async function addBloodlineMember(pendingAdd, timezone) {
   const sheets = getSheetsClient();
   const sheetTab = process.env.GOOGLE_SHEET_TAB || 'Sheet1';
   const row = await findNextSheetRow(sheets, sheetTab);
+  const joinedAt = String(Date.now());
 
-  // Column A ("placeholder") is deliberately never written by the bot.
   await sheets.spreadsheets.values.update({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range: `${sheetTab}!C${row}:F${row}`,
+    range: `${sheetTab}!C${row}:G${row}`,
     valueInputOption: 'USER_ENTERED',
     requestBody: {
-      values: [[pendingAdd.targetDisplayName, pendingAdd.targetUsername, pendingAdd.targetId, timezone]],
+      values: [[pendingAdd.targetDisplayName, pendingAdd.targetUsername, pendingAdd.targetId, timezone, joinedAt]],
     },
   });
+}
+
+async function getBloodlineEntries() {
+  const sheets = getSheetsClient();
+  const sheetTab = process.env.GOOGLE_SHEET_TAB || 'Sheet1';
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    range: `${sheetTab}!C:G`,
+  });
+
+  const rows = response.data.values ?? [];
+  const entries = [];
+  const seenIds = new Set();
+
+  for (const row of rows) {
+    if (!row || row.every((value) => String(value).trim() === '')) continue;
+
+    const [displayName, username, id, timezone, joinedAt] = row;
+    const normalizedId = String(id ?? '').trim();
+    if (!normalizedId || seenIds.has(normalizedId)) continue;
+
+    seenIds.add(normalizedId);
+    entries.push({
+      id: normalizedId,
+      displayName: String(displayName ?? '').trim() || String(username ?? '').trim() || normalizedId,
+      username: String(username ?? '').trim(),
+      timezone: String(timezone ?? '').trim(),
+      joinedAt: joinedAt ? Number(joinedAt) : null,
+    });
+  }
+
+  return entries.sort((left, right) => Number(left.joinedAt ?? 0) - Number(right.joinedAt ?? 0));
+}
+
+function buildBloodlineDescription(entries) {
+  const visibleEntries = entries.slice(0, BLOODLINE_MAX_MEMBERS);
+  if (!visibleEntries.length) {
+    return 'Aucun membre pour le moment.';
+  }
+
+  return visibleEntries
+    .map((entry, index) => {
+      const timestamp = entry.joinedAt ? Math.floor(entry.joinedAt / 1000) : Math.floor(Date.now() / 1000);
+      return `${index + 1}. <@${entry.id}> - Membre depuis <t:${timestamp}:F>`;
+    })
+    .join('\n');
+}
+
+async function syncBloodlineEmbed() {
+  const entries = await getBloodlineEntries();
+  const channel = await client.channels.fetch(BLOODLINE_CHANNEL_ID);
+  if (!channel?.isTextBased() || !channel.isSendable()) {
+    throw new Error(`The bloodline channel ${BLOODLINE_CHANNEL_ID} is unavailable or the bot cannot send messages there.`);
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('Bloodline')
+    .setDescription(buildBloodlineDescription(entries))
+    .setFooter({ text: `${entries.length}/${BLOODLINE_MAX_MEMBERS} membres` })
+    .setTimestamp(Date.now());
+
+  const messages = await channel.messages.fetch({ limit: 50 });
+  const existingMessage = [...messages.values()].find((message) => message.embeds.some((item) => item.title === 'Bloodline'));
+
+  if (existingMessage) {
+    await existingMessage.edit({ embeds: [embed], allowedMentions: { parse: [] } });
+  } else {
+    await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  }
 }
 
 function transcriptFor(message) {
@@ -198,14 +271,12 @@ async function sendTranscriptLog(kind, message, previousContent) {
   ];
 
   if (previousContent !== undefined) {
-    // For edits, include both previous and current content in the embed as separate fields.
     embed.addFields(...metadataFields);
     embed.addFields(
       { name: 'Avant', value: codeBlock(previousContent), inline: false },
       { name: 'Après', value: codeBlock(content), inline: false },
     );
   } else {
-    // For new messages, include metadata + content in the same embed.
     embed.addFields(...metadataFields);
     embed.addFields({ name: 'Contenu', value: codeBlock(content), inline: false });
   }
@@ -298,7 +369,20 @@ async function handleInteraction(interaction) {
   await interaction.deferReply();
   try {
     const timezone = interaction.fields.getTextInputValue(TIMEZONE_INPUT_ID).trim();
+    const existingEntries = await getBloodlineEntries();
+    if (existingEntries.some((entry) => entry.id === pendingAdd.targetId)) {
+      await interaction.editReply('Ce membre est déjà dans la bloodline.');
+      return;
+    }
+
+    if (existingEntries.length >= BLOODLINE_MAX_MEMBERS) {
+      await interaction.editReply(BLOODLINE_CONTACT_TEXT);
+      return;
+    }
+
     await addBloodlineMember(pendingAdd, timezone);
+    await syncBloodlineEmbed();
+
     const timestamp = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
       .setTitle('Membre ajouté à la bloodline')
@@ -317,6 +401,8 @@ client.once(Events.ClientReady, (readyClient) => {
   void registerCommands()
     .then(() => console.log(`Commands registered for guild ${GUILD_ID}`))
     .catch((error) => console.error('Unable to register commands (the bot remains online):', error));
+  void syncBloodlineEmbed()
+    .catch((error) => console.error('Unable to sync bloodline embed:', error));
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
