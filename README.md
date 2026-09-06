@@ -18,7 +18,7 @@ Le rang interne est attribué automatiquement et n'est jamais réutilisé, même
 ### Modération
 
 - `/strikes utilisateur:<membre> raison:<raison>` : enregistre un strike, envoie un DM et crée un log.
-- `/timeout utilisateur:<membre> raison:<raison>` : applique un timeout de **10 minutes** sur tous les serveurs où le bot est présent.
+- `/timeout utilisateur:<membre> raison:<raison> duree:<durée>` : applique le timeout choisi sur tous les serveurs où le bot est présent. Formats acceptés : `m` (minutes), `h` (heures) et `d` (jours), par exemple `1h`. Maximum : 28 jours.
 - `/globalban utilisateur:<membre> raison:<raison>` : envoie d'abord un DM puis bannit sur tous les serveurs où le bot est présent.
 
 Les commandes de modération gèrent chaque serveur séparément : une erreur sur un serveur n'empêche pas l'action sur les autres.

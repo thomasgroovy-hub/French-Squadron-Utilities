@@ -12,7 +12,7 @@ const LOG_CHANNEL_ID = '1546193398388494336';
 const MODERATION_ROLE_ID = '1487266203864006707';
 const UNLINK_ROLE_ID = '1487276505712033883';
 const STRIKE_TABLE = 'strikes';
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
 
 export const moderationCommands = [
   new SlashCommandBuilder()
@@ -24,7 +24,12 @@ export const moderationCommands = [
     .setName('timeout')
     .setDescription('Place un utilisateur en timeout sur tous les serveurs.')
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
-    .addStringOption((option) => option.setName('raison').setDescription('Raison du timeout').setRequired(true).setMaxLength(1000)),
+    .addStringOption((option) => option.setName('raison').setDescription('Raison du timeout').setRequired(true).setMaxLength(1000))
+    .addStringOption((option) => option
+      .setName('duree')
+      .setDescription('Durée : 30m, 1h ou 2d (maximum 28 jours)')
+      .setRequired(true)
+      .setMaxLength(10)),
   new SlashCommandBuilder()
     .setName('globalban')
     .setDescription('Bannit un utilisateur sur tous les serveurs.')
@@ -50,6 +55,18 @@ function createPool() {
 
 function logField(name, value, inline = false) {
   return { name, value: String(value).slice(0, 1024) || '—', inline };
+}
+
+function parseTimeoutDuration(value) {
+  const match = value.trim().toLowerCase().match(/^(\d+)([mhd])$/);
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  const multipliers = { m: 60_000, h: 60 * 60_000, d: 24 * 60 * 60_000 };
+  const milliseconds = amount * multipliers[match[2]];
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 60_000 || milliseconds > MAX_TIMEOUT_MS) return null;
+
+  return { milliseconds, label: `${amount}${match[2]}` };
 }
 
 export function createModerationIntegration({ client }) {
@@ -150,6 +167,11 @@ export function createModerationIntegration({ client }) {
     }
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
+    const duration = parseTimeoutDuration(interaction.options.getString('duree', true));
+    if (!duration) {
+      await interaction.reply({ content: 'Durée invalide. Utilise un nombre suivi de `m`, `h` ou `d`, par exemple `30m`, `1h` ou `2d` (maximum 28 jours).', ephemeral: true });
+      return;
+    }
     await interaction.deferReply({ ephemeral: true });
     let succeeded = 0;
     let failed = 0;
@@ -157,19 +179,19 @@ export function createModerationIntegration({ client }) {
       try {
         const member = await guild.members.fetch(target.id).catch(() => null);
         if (!member) continue;
-        await member.timeout(DEFAULT_TIMEOUT_MS, reason);
+        await member.timeout(duration.milliseconds, reason);
         succeeded += 1;
       } catch (error) {
         failed += 1;
         console.error(`[Moderation] Timeout failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply(`Timeout appliqué à ${target} sur ${succeeded} serveur(s). Échecs : ${failed}.`);
+    await interaction.editReply(`Timeout de ${duration.label} appliqué à ${target} sur ${succeeded} serveur(s). Échecs : ${failed}.`);
     await sendLog('Timeout appliqué', 0xE67E22, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
       logField('Raison', reason),
-      logField('Durée', '10 minutes', true),
+      logField('Durée', duration.label, true),
       logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
     ]);
   }
