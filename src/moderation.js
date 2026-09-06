@@ -395,7 +395,9 @@ export function createModerationIntegration({ client }) {
       return;
     }
     const [strikes] = await pool.execute(
-      `SELECT moderator_discord_id, raison, created_at FROM ${STRIKE_TABLE} WHERE discord_id = ? ORDER BY created_at DESC`,
+      `SELECT moderator_discord_id, raison,
+              DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at_utc
+       FROM ${STRIKE_TABLE} WHERE discord_id = ? ORDER BY created_at DESC`,
       [targetId],
     );
     if (!strikes.length) {
@@ -403,10 +405,18 @@ export function createModerationIntegration({ client }) {
       return;
     }
     const description = strikes.map((strike, index) => {
-      const date = new Date(strike.created_at).toLocaleString('fr-FR');
-      return `**${index + 1}. ${date}**\nRaison : ${strike.raison}\nModérateur : <@${strike.moderator_discord_id}>`;
+      const timestamp = Math.floor(new Date(strike.created_at_utc).getTime() / 1000);
+      return `**${index + 1}. <t:${timestamp}:F>**\nRaison : ${strike.raison}\nModérateur : <@${strike.moderator_discord_id}>`;
     }).join('\n\n');
-    await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xF1C40F).setTitle('Strikes enregistrés').setDescription(description)], ephemeral: true });
+    await interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setColor(STRIKE_COLOR)
+        .setTitle('Strikes enregistrés')
+        .setDescription(description.replace(/\n\n(?=\*\*\d+\.)/g, `\n\n${EMBED_SEPARATOR}\n\n`))
+        .setFooter({ text: 'FPCS Utilities' })
+        .setTimestamp()],
+      ephemeral: true,
+    });
   }
 
   async function handleInteraction(interaction) {
