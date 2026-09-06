@@ -7,7 +7,6 @@ import {
   ButtonStyle,
   EmbedBuilder,
   ModalBuilder,
-  PermissionsBitField,
   SlashCommandBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -17,7 +16,11 @@ import { Tunnel } from 'cloudflared';
 const ROBLOX_USERNAME_LOOKUP_URL = 'https://users.roblox.com/v1/usernames/users';
 const ROBLOX_USER_URL = 'https://users.roblox.com/v1/users/';
 const ROBLOX_AVATAR_URL = 'https://thumbnails.roblox.com/v1/users/avatar-headshot?format=Png&size=420x420&userIds=';
-const VERIFICATION_LOG_CHANNEL_ID = '1472293282217328828';
+const VERIFICATION_GUILD_ID = '1487258655840669807';
+const COMMAND_GUILD_ID = '1454217001626243288';
+const VERIFICATION_PANEL_ROLE_ID = '1518410191933014057';
+const UNLINK_ROLE_ID = '1487276505712033883';
+const VERIFICATION_LOG_CHANNEL_ID = '1546193398388494336';
 const VERIFICATION_CODE_LENGTH = 6;
 const VERIFICATION_EXPIRY_MINUTES = 15;
 const DATABASE_RETRY_DELAY_MS = 60_000;
@@ -27,8 +30,7 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const robloxCommands = [
   new SlashCommandBuilder()
     .setName('verification-panel')
-    .setDescription('Poste le panneau de vérification Roblox.')
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator.toString()),
+    .setDescription('Poste le panneau de vérification Roblox.'),
   new SlashCommandBuilder()
     .setName('who-is')
     .setDescription('Recherche la liaison Discord ou Roblox d’une personne.')
@@ -43,7 +45,11 @@ export const robloxCommands = [
       .setMaxLength(20)),
   new SlashCommandBuilder()
     .setName('unlink')
-    .setDescription('Détache ton compte Roblox de ton compte Discord.'),
+    .setDescription('Détache le compte Roblox d’un utilisateur.')
+    .addUserOption((option) => option
+      .setName('utilisateur')
+      .setDescription('Utilisateur à délier')
+      .setRequired(true)),
 ];
 
 class RobloxApiError extends Error {
@@ -285,6 +291,16 @@ export function createRobloxIntegration({ client, guildId }) {
             received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS strikes (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            discord_id VARCHAR(20) NOT NULL,
+            moderator_discord_id VARCHAR(20) NOT NULL,
+            raison VARCHAR(1000) NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX strikes_discord_id_idx (discord_id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
 
         databaseReady = true;
         console.log('[Roblox] MySQL tables are ready.');
@@ -318,7 +334,7 @@ export function createRobloxIntegration({ client, guildId }) {
   async function sendVerificationLog({ title, color, interaction, description, fields }) {
     try {
       const channel = await client.channels.fetch(VERIFICATION_LOG_CHANNEL_ID);
-      if (!channel?.isTextBased() || !channel.isSendable() || channel.guildId !== guildId) {
+      if (!channel?.isTextBased() || !channel.isSendable() || channel.guildId !== VERIFICATION_GUILD_ID) {
         throw new Error(`Verification log channel ${VERIFICATION_LOG_CHANNEL_ID} is unavailable.`);
       }
 
@@ -370,8 +386,11 @@ export function createRobloxIntegration({ client, guildId }) {
   }
 
   async function handleVerificationPanel(interaction) {
-    if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
-      await interaction.reply({ content: 'Tu dois être administrateur pour poster le panneau de vérification.', ephemeral: true });
+    const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
+    const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
+    const requiredRole = permissionGuild?.roles.cache.get(VERIFICATION_PANEL_ROLE_ID);
+    if (!requiredRole || !permissionMember?.roles.highest || permissionMember.roles.highest.position < requiredRole.position) {
+      await interaction.reply({ content: 'Tu n’as pas le rôle nécessaire pour poster le panneau de vérification.', ephemeral: true });
       return;
     }
 
@@ -566,13 +585,21 @@ export function createRobloxIntegration({ client, guildId }) {
   }
 
   async function handleUnlink(interaction) {
+    const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
+    const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
+    const requiredRole = permissionGuild?.roles.cache.get(UNLINK_ROLE_ID);
+    if (!requiredRole || !permissionMember?.roles.highest || permissionMember.roles.highest.position < requiredRole.position) {
+      await interaction.reply({ content: 'Tu n’as pas le niveau de rôle nécessaire pour utiliser cette commande.', ephemeral: true });
+      return;
+    }
+    const target = interaction.options.getUser('utilisateur', true);
     await interaction.deferReply({ ephemeral: true });
     if (!(await requireDatabase(interaction))) return;
 
     try {
       const [links] = await pool.execute(
         'SELECT roblox_username FROM roblox_discord_links WHERE discord_user_id = ? LIMIT 1',
-        [interaction.user.id],
+        [target.id],
       );
       const link = links[0];
       if (!link) {
@@ -580,14 +607,23 @@ export function createRobloxIntegration({ client, guildId }) {
         return;
       }
 
-      await pool.execute('DELETE FROM roblox_discord_links WHERE discord_user_id = ?', [interaction.user.id]);
-      await interaction.editReply(`La liaison avec **${link.roblox_username}** a été supprimée avec succès.`);
+      const [strikeRows] = await pool.execute(
+        'SELECT COUNT(*) AS total FROM strikes WHERE discord_id = ?',
+        [link.discord_user_id],
+      );
+      const strikeCount = Number(strikeRows[0]?.total ?? 0);
+
+      await pool.execute('DELETE FROM roblox_discord_links WHERE discord_user_id = ?', [target.id]);
+      await interaction.editReply(`La liaison de ${target} avec **${link.roblox_username}** a été supprimée avec succès.`);
       await sendVerificationLog({
         title: 'Liaison Roblox supprimée',
         color: 0xE67E22,
         interaction,
         description: 'Un utilisateur a détaché son compte Roblox.',
-        fields: [{ name: 'Pseudo Roblox', value: link.roblox_username, inline: true }],
+        fields: [
+          { name: 'Utilisateur délié', value: `${target} (${target.id})`, inline: true },
+          { name: 'Pseudo Roblox', value: link.roblox_username, inline: true },
+        ],
       });
     } catch (error) {
       markDatabaseUnavailable(error);
@@ -691,12 +727,21 @@ export function createRobloxIntegration({ client, guildId }) {
           { name: 'Discord', value: resolvedDiscordUser ? `${resolvedDiscordUser} (${resolvedDiscordUser.tag})` : `<@${link.discord_user_id}>`, inline: true },
           { name: 'Roblox', value: profile ? `**${profile.username}**${profile.displayName !== profile.username ? ` (${profile.displayName})` : ''}` : `**${link.roblox_username}**`, inline: true },
           { name: 'Tag de vérification', value: `#${link.verification_rank}`, inline: true },
+          { name: 'Strikes actifs', value: String(strikeCount), inline: true },
           { name: 'Âge du compte Discord', value: discordCreated ? `<t:${Math.floor(resolvedDiscordUser.createdTimestamp / 1000)}:D> (${discordCreated})` : 'Information indisponible', inline: false },
           { name: 'Âge du compte Roblox', value: robloxAge ? `<t:${Math.floor(new Date(profile.created).getTime() / 1000)}:D> (${robloxAge})` : `Information indisponible${robloxError ? ` : ${robloxError}` : '.'}`, inline: false },
         )
         .setFooter({ text: 'French Squadron Utilities' });
       if (avatarUrl) embed.setThumbnail(avatarUrl);
-      await interaction.editReply({ embeds: [embed] });
+      const strikesButton = new ButtonBuilder()
+        .setCustomId('strikes_view')
+        .setLabel('Voir les strikes')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(strikeCount === 0);
+      await interaction.editReply({
+        embeds: [embed],
+        components: [new ActionRowBuilder().addComponents(strikesButton)],
+      });
     } catch (error) {
       markDatabaseUnavailable(error);
       await interaction.editReply('Impossible d’effectuer cette recherche pour le moment. Réessaie plus tard.');
@@ -704,8 +749,8 @@ export function createRobloxIntegration({ client, guildId }) {
   }
 
   async function handleRobloxInteraction(interaction) {
-    if (interaction.guildId !== guildId) return false;
     if (interaction.isChatInputCommand()) {
+      if (interaction.guildId !== guildId && interaction.guildId !== VERIFICATION_GUILD_ID && interaction.guildId !== COMMAND_GUILD_ID) return false;
       if (interaction.commandName === 'verification-panel') {
         await handleVerificationPanel(interaction);
         return true;
