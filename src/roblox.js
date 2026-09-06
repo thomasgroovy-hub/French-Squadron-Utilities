@@ -1,7 +1,7 @@
 import express from 'express';
 import mysql from 'mysql2/promise';
 import { randomInt, timingSafeEqual } from 'node:crypto';
-import { SlashCommandBuilder } from 'discord.js';
+import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
 import { Tunnel } from 'cloudflared';
 
 const ROBLOX_USERNAME_LOOKUP_URL = 'https://users.roblox.com/v1/usernames/users';
@@ -183,12 +183,15 @@ function robloxErrorMessage(error) {
   return 'Une erreur inattendue est survenue pendant la vérification Roblox.';
 }
 
-function deathDmMessage(payload) {
-  const occurredAt = Number.isSafeInteger(payload.occurredAt)
-    ? `<t:${payload.occurredAt}:F>`
-    : 'à un moment inconnu';
-
-  return `Ton personnage Roblox **${payload.robloxUsername}** est mort pendant une session de permadeath (${occurredAt}).`;
+function deathDmEmbed(payload) {
+  return new EmbedBuilder()
+    .setColor(0xED4245)
+    .setTitle('NOTIFICATION DE MORT')
+    .setDescription(
+      `Tu es mort durant une session roleplay, **ton personnage (${payload.robloxUsername}) est donc désormais mort de manière roleplay**. Si tu trouves cette mort injuste, ouvre un **ticket** afin de la contester.\n\nL’équipe lore de Site-66.`,
+    )
+    .setFooter({ text: 'FPCSBot' })
+    .setTimestamp(new Date(payload.occurredAt * 1000));
 }
 
 export function createRobloxIntegration({ client, guildId }) {
@@ -500,7 +503,7 @@ export function createRobloxIntegration({ client, guildId }) {
       try {
         const discordUser = await client.users.fetch(link.discord_user_id);
         await discordUser.send({
-          content: deathDmMessage(payload),
+          embeds: [deathDmEmbed(payload)],
           allowedMentions: { parse: [] },
         });
         console.log(`[Roblox] Sent permadeath DM for event ${payload.eventId} to Discord user ${link.discord_user_id}.`);
