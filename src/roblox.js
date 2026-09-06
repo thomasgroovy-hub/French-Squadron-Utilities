@@ -607,12 +607,6 @@ export function createRobloxIntegration({ client, guildId }) {
         return;
       }
 
-      const [strikeRows] = await pool.execute(
-        'SELECT COUNT(*) AS total FROM strikes WHERE discord_id = ?',
-        [link.discord_user_id],
-      );
-      const strikeCount = Number(strikeRows[0]?.total ?? 0);
-
       await pool.execute('DELETE FROM roblox_discord_links WHERE discord_user_id = ?', [target.id]);
       await interaction.editReply(`La liaison de ${target} avec **${link.roblox_username}** a été supprimée avec succès.`);
       await sendVerificationLog({
@@ -689,6 +683,12 @@ export function createRobloxIntegration({ client, guildId }) {
           : 'Aucune liaison vérifiée ne correspond à ce pseudo Roblox.');
         return;
       }
+
+      const [strikeRows] = await pool.execute(
+        'SELECT COUNT(*) AS total FROM strikes WHERE discord_id = ?',
+        [link.discord_user_id],
+      );
+      const strikeCount = Number(strikeRows[0]?.total ?? 0);
 
       let resolvedDiscordUser = discordUser;
       if (!resolvedDiscordUser) {

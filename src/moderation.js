@@ -35,6 +35,21 @@ export const moderationCommands = [
     .setDescription('Bannit un utilisateur sur tous les serveurs.')
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du bannissement').setRequired(true).setMaxLength(1000)),
+  new SlashCommandBuilder()
+    .setName('untimeout')
+    .setDescription('Retire le timeout d’un utilisateur sur tous les serveurs.')
+    .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
+    .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
+  new SlashCommandBuilder()
+    .setName('unban')
+    .setDescription('Retire le bannissement d’un utilisateur sur tous les serveurs.')
+    .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
+    .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
+  new SlashCommandBuilder()
+    .setName('removestrike')
+    .setDescription('Supprime tous les strikes d’un utilisateur.')
+    .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
+    .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
 ];
 
 function createPool() {
@@ -126,15 +141,21 @@ export function createModerationIntegration({ client }) {
 
   async function requireDatabase(interaction) {
     if (await initializeDatabase()) return true;
-    await interaction.reply({ content: 'Le système de modération est temporairement indisponible.', ephemeral: true });
+    const response = { content: 'Le système de modération est temporairement indisponible.', ephemeral: true };
+    if (interaction.deferred || interaction.replied) await interaction.editReply(response);
+    else await interaction.reply(response);
+    return false;
+  }
+
+  async function requireModerationAccess(interaction) {
+    if (await hasModerationAccess(interaction)) return true;
+    await interaction.editReply('Tu n’as pas le rôle nécessaire pour utiliser cette commande.');
     return false;
   }
 
   async function handleStrike(interaction) {
-    if (!(await hasModerationAccess(interaction))) {
-      await interaction.reply({ content: 'Tu n’as pas le rôle nécessaire pour utiliser cette commande.', ephemeral: true });
-      return;
-    }
+    await interaction.deferReply({ ephemeral: true });
+    if (!(await requireModerationAccess(interaction))) return;
     if (!(await requireDatabase(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
@@ -148,7 +169,7 @@ export function createModerationIntegration({ client }) {
       } catch (error) {
         console.error(`[Moderation] Unable to DM strike target ${target.id}:`, error.message);
       }
-      await interaction.reply({ content: `Le strike de ${target} a été enregistré.`, ephemeral: true });
+      await interaction.editReply(`Le strike de ${target} a été enregistré.`);
       await sendLog('Strike attribué', 0xF1C40F, [
         logField('Cible', `${target} (${target.id})`),
         logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
@@ -156,23 +177,20 @@ export function createModerationIntegration({ client }) {
       ]);
     } catch (error) {
       console.error('[Moderation] Unable to create strike:', error.message);
-      await interaction.reply({ content: 'Impossible d’enregistrer le strike.', ephemeral: true }).catch(() => {});
+      await interaction.editReply('Impossible d’enregistrer le strike.').catch(() => {});
     }
   }
 
   async function handleTimeout(interaction) {
-    if (!(await hasModerationAccess(interaction))) {
-      await interaction.reply({ content: 'Tu n’as pas le rôle nécessaire pour utiliser cette commande.', ephemeral: true });
-      return;
-    }
+    await interaction.deferReply({ ephemeral: true });
+    if (!(await requireModerationAccess(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
     const duration = parseTimeoutDuration(interaction.options.getString('duree', true));
     if (!duration) {
-      await interaction.reply({ content: 'Durée invalide. Utilise un nombre suivi de `m`, `h` ou `d`, par exemple `30m`, `1h` ou `2d` (maximum 28 jours).', ephemeral: true });
+      await interaction.editReply('Durée invalide. Utilise un nombre suivi de `m`, `h` ou `d`, par exemple `30m`, `1h` ou `2d` (maximum 28 jours).');
       return;
     }
-    await interaction.deferReply({ ephemeral: true });
     let succeeded = 0;
     let failed = 0;
     for (const guild of client.guilds.cache.values()) {
@@ -197,13 +215,10 @@ export function createModerationIntegration({ client }) {
   }
 
   async function handleGlobalBan(interaction) {
-    if (!(await hasModerationAccess(interaction))) {
-      await interaction.reply({ content: 'Tu n’as pas le rôle nécessaire pour utiliser cette commande.', ephemeral: true });
-      return;
-    }
+    await interaction.deferReply({ ephemeral: true });
+    if (!(await requireModerationAccess(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
-    await interaction.deferReply({ ephemeral: true });
     try {
       await target.send(`Tu as été banni de la communauté.\nRaison : ${reason}\nModérateur : ${interaction.user.tag}`);
     } catch (error) {
@@ -227,6 +242,79 @@ export function createModerationIntegration({ client }) {
       logField('Raison', reason),
       logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
     ]);
+  }
+
+  async function handleUntimeout(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+    if (!(await requireModerationAccess(interaction))) return;
+    const target = interaction.options.getUser('utilisateur', true);
+    const reason = interaction.options.getString('raison')?.trim() || 'Retrait du timeout';
+    let succeeded = 0;
+    let failed = 0;
+    for (const guild of client.guilds.cache.values()) {
+      try {
+        const member = await guild.members.fetch(target.id).catch(() => null);
+        if (!member) continue;
+        await member.timeout(null, reason);
+        succeeded += 1;
+      } catch (error) {
+        failed += 1;
+        console.error(`[Moderation] Untimeout failed in ${guild.name} (${guild.id}):`, error.message);
+      }
+    }
+    await interaction.editReply(`Timeout retiré pour ${target} sur ${succeeded} serveur(s). Échecs : ${failed}.`);
+    await sendLog('Timeout retiré', 0x27AE60, [
+      logField('Cible', `${target} (${target.id})`),
+      logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
+      logField('Raison', reason),
+      logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
+    ]);
+  }
+
+  async function handleUnban(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+    if (!(await requireModerationAccess(interaction))) return;
+    const target = interaction.options.getUser('utilisateur', true);
+    const reason = interaction.options.getString('raison')?.trim() || 'Retrait du bannissement';
+    let succeeded = 0;
+    let failed = 0;
+    for (const guild of client.guilds.cache.values()) {
+      try {
+        await guild.bans.remove(target.id, reason);
+        succeeded += 1;
+      } catch (error) {
+        failed += 1;
+        console.error(`[Moderation] Unban failed in ${guild.name} (${guild.id}):`, error.message);
+      }
+    }
+    await interaction.editReply(`Bannissement retiré pour ${target} sur ${succeeded} serveur(s). Échecs : ${failed}.`);
+    await sendLog('Bannissement retiré', 0x27AE60, [
+      logField('Cible', `${target} (${target.id})`),
+      logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
+      logField('Raison', reason),
+      logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
+    ]);
+  }
+
+  async function handleRemoveStrike(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+    if (!(await requireModerationAccess(interaction))) return;
+    if (!(await requireDatabase(interaction))) return;
+    const target = interaction.options.getUser('utilisateur', true);
+    const reason = interaction.options.getString('raison')?.trim() || 'Suppression des strikes';
+    try {
+      const [result] = await pool.execute(`DELETE FROM ${STRIKE_TABLE} WHERE discord_id = ?`, [target.id]);
+      await interaction.editReply(`${result.affectedRows} strike(s) supprimé(s) pour ${target}.`);
+      await sendLog('Strikes supprimés', 0x27AE60, [
+        logField('Cible', `${target} (${target.id})`),
+        logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
+        logField('Raison', reason),
+        logField('Nombre supprimé', result.affectedRows, true),
+      ]);
+    } catch (error) {
+      console.error('[Moderation] Unable to remove strikes:', error.message);
+      await interaction.editReply('Impossible de supprimer les strikes.').catch(() => {});
+    }
   }
 
   async function handleStrikesView(interaction) {
@@ -260,6 +348,9 @@ export function createModerationIntegration({ client }) {
     if (interaction.commandName === 'strikes') await handleStrike(interaction);
     else if (interaction.commandName === 'timeout') await handleTimeout(interaction);
     else if (interaction.commandName === 'globalban') await handleGlobalBan(interaction);
+    else if (interaction.commandName === 'untimeout') await handleUntimeout(interaction);
+    else if (interaction.commandName === 'unban') await handleUnban(interaction);
+    else if (interaction.commandName === 'removestrike') await handleRemoveStrike(interaction);
     else return false;
     return true;
   }
