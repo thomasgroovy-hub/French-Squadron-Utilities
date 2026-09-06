@@ -17,6 +17,7 @@ import {
 import { readFileSync } from 'node:fs';
 import { google } from 'googleapis';
 import { createPrivateKey, randomUUID } from 'node:crypto';
+import { createRobloxIntegration, robloxCommands } from './roblox.js';
 
 const GUILD_ID = '1454217001626243288';
 const LOG_CHANNEL_ID = '1472309654729261287';
@@ -37,6 +38,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('sheet')
     .setDescription('Donne le lien au Google Sheet.'),
+  ...robloxCommands,
 ];
 
 for (const key of ['DISCORD_TOKEN', 'DISCORD_APPLICATION_ID', 'GOOGLE_SHEET_ID']) {
@@ -53,6 +55,8 @@ const client = new Client({
   ],
   partials: [Partials.Channel, Partials.Message],
 });
+
+const robloxIntegration = createRobloxIntegration({ client, guildId: GUILD_ID });
 
 function hasAuthorizedRole(member) {
   if (!member) return false;
@@ -417,6 +421,8 @@ async function handleInteraction(interaction) {
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Connected as ${readyClient.user.tag}`);
+  void robloxIntegration.initializeDatabase();
+  robloxIntegration.startHttpServer();
   void registerCommands()
     .then(() => console.log(`Commands registered for guild ${GUILD_ID}`))
     .catch((error) => console.error('Unable to register commands (the bot remains online):', error));
@@ -425,7 +431,10 @@ client.once(Events.ClientReady, (readyClient) => {
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
-  void handleInteraction(interaction).catch((error) => console.error('Unable to handle interaction:', error));
+  void (async () => {
+    if (await robloxIntegration.handleInteraction(interaction)) return;
+    await handleInteraction(interaction);
+  })().catch((error) => console.error('Unable to handle interaction:', error));
 });
 
 client.on(Events.MessageCreate, (message) => {
