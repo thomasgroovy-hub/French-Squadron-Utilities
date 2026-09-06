@@ -13,6 +13,10 @@ const MODERATION_ROLE_ID = '1487266203864006707';
 const UNLINK_ROLE_ID = '1487276505712033883';
 const STRIKE_TABLE = 'strikes';
 const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
+const EMBED_SEPARATOR = '════════════════════════════════════════';
+const STRIKE_COLOR = 0xD99A2B;
+const TIMEOUT_COLOR = 0x607D8B;
+const BAN_COLOR = 0xB34747;
 
 export const moderationCommands = [
   new SlashCommandBuilder()
@@ -77,8 +81,21 @@ function actionEmbed(title, color, description, fields = []) {
     .setColor(color)
     .setTitle(title)
     .setDescription(description)
-    .addFields(fields)
+    .addFields({ name: '\u200b', value: EMBED_SEPARATOR }, ...fields)
+    .setFooter({ text: 'French Squadron Utilities' })
     .setTimestamp();
+}
+
+function moderatorLabel(interaction) {
+  return `${interaction.user.tag} (${interaction.user.id})`;
+}
+
+async function safeEditReply(interaction, payload) {
+  try {
+    await interaction.editReply(payload);
+  } catch (error) {
+    console.error('[Moderation] Unable to publish command confirmation:', error.message);
+  }
 }
 
 function parseTimeoutDuration(value) {
@@ -133,14 +150,14 @@ export function createModerationIntegration({ client }) {
     return databaseInitialization;
   }
 
-  async function sendLog(title, color, fields) {
+  async function sendLog(title, color, description, fields) {
     try {
       const channel = await client.channels.fetch(LOG_CHANNEL_ID);
       if (!channel?.isTextBased() || !channel.isSendable() || channel.guildId !== MODERATION_GUILD_ID) {
         throw new Error(`Log channel ${LOG_CHANNEL_ID} is unavailable.`);
       }
       await channel.send({
-        embeds: [new EmbedBuilder().setColor(color).setTitle(title).addFields(fields).setTimestamp()],
+        embeds: [actionEmbed(title, color, description, fields)],
         allowedMentions: { parse: [] },
       });
     } catch (error) {
@@ -179,30 +196,28 @@ export function createModerationIntegration({ client }) {
       );
       try {
         await target.send({
-          embeds: [actionEmbed('Strike reçu', 0xF1C40F, 'Un strike vient de t’être attribué.', [
-            logField('Raison', reason),
-            logField('Modérateur', `${interaction.user.tag} (${interaction.user.id})`),
-          ])],
+          embeds: [actionEmbed(`STRIKE — ${interaction.user.tag}`, STRIKE_COLOR, 'Un strike vous a été attribué pour la raison suivante :\n\n' + reason)],
         });
       } catch (error) {
         console.error(`[Moderation] Unable to DM strike target ${target.id}:`, error.message);
       }
-      await interaction.editReply({
-        embeds: [actionEmbed('Strike enregistré', 0xF1C40F, `Le strike de ${target} a été enregistré.`, [
+      await safeEditReply(interaction, {
+        embeds: [actionEmbed('STRIKE', STRIKE_COLOR, `${target} a reçu un strike.`, [
+          logField('Modérateur', moderatorLabel(interaction), true),
           logField('Cible', `${target} (${target.id})`, true),
           logField('Raison', reason, true),
         ])],
       });
-      await sendLog('Strike attribué', 0xF1C40F, [
+      await sendLog('STRIKE', STRIKE_COLOR, `${target} a reçu un strike.`, [
         logField('Cible', `${target} (${target.id})`),
-        logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
+        logField('Modérateur', moderatorLabel(interaction)),
         logField('Raison', reason),
       ]);
     } catch (error) {
       console.error('[Moderation] Unable to create strike:', error.message);
-      await interaction.editReply({
+      await safeEditReply(interaction, {
         embeds: [actionEmbed('Échec du strike', 0xE74C3C, 'Impossible d’enregistrer le strike.')],
-      }).catch(() => {});
+      });
     }
   }
 
@@ -213,21 +228,8 @@ export function createModerationIntegration({ client }) {
     const reason = interaction.options.getString('raison', true).trim();
     const duration = parseTimeoutDuration(interaction.options.getString('duree', true));
     if (!duration) {
-      await interaction.editReply({
-        embeds: [actionEmbed('Durée invalide', 0xE74C3C, 'Utilise un nombre suivi de `m`, `h` ou `d`, par exemple `30m`, `1h` ou `2d` (maximum 28 jours).')],
-      });
+      await safeEditReply(interaction, { embeds: [actionEmbed('TIMEOUT', TIMEOUT_COLOR, 'Durée invalide. Utilise un nombre suivi de `m`, `h` ou `d`, par exemple `30m`, `1h` ou `2d` (maximum 28 jours).')] });
       return;
-    }
-    try {
-      await target.send({
-        embeds: [actionEmbed('Timeout appliqué', 0xE67E22, 'Tu as été mis en timeout sur le serveur.', [
-          logField('Durée', duration.label, true),
-          logField('Raison', reason),
-          logField('Modérateur', `${interaction.user.tag} (${interaction.user.id})`),
-        ])],
-      });
-    } catch (error) {
-      console.error(`[Moderation] Unable to DM timeout target ${target.id}:`, error.message);
     }
     let succeeded = 0;
     let failed = 0;
@@ -242,19 +244,29 @@ export function createModerationIntegration({ client }) {
         console.error(`[Moderation] Timeout failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply({
-      embeds: [actionEmbed('Timeout appliqué', 0xE67E22, `Le timeout de ${target} a été appliqué sur les serveurs où la personne est présente.`, [
-        logField('Durée', duration.label, true),
+    if (succeeded > 0) {
+      try {
+        await target.send({
+          embeds: [actionEmbed('TIMEOUT', TIMEOUT_COLOR, 'Vous avez été mis en timeout.', [
+            logField('Durée', duration.label, true),
+            logField('Raison', reason),
+            logField('Modérateur', moderatorLabel(interaction)),
+          ])],
+        });
+      } catch (error) {
+        console.error(`[Moderation] Unable to DM timeout target ${target.id}:`, error.message);
+      }
+    }
+    await safeEditReply(interaction, {
+      embeds: [actionEmbed('TIMEOUT', TIMEOUT_COLOR, `${target} est mute pour ${duration.label}.`, [
+        logField('Modérateur', moderatorLabel(interaction), true),
         logField('Raison', reason, true),
-        logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`),
       ])],
     });
-    await sendLog('Timeout appliqué', 0xE67E22, [
-      logField('Cible', `${target} (${target.id})`),
-      logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
+    await sendLog('TIMEOUT', TIMEOUT_COLOR, `${target} est mute pour ${duration.label}.`, [
+      logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
-      logField('Durée', duration.label, true),
-      logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
+      logField('Résultat', `Réussi sur ${succeeded} serveur(s), échoué sur ${failed}`, true),
     ]);
   }
 
@@ -265,9 +277,9 @@ export function createModerationIntegration({ client }) {
     const reason = interaction.options.getString('raison', true).trim();
     try {
       await target.send({
-        embeds: [actionEmbed('Bannissement global', 0xE74C3C, 'Tu as été banni de la communauté.', [
+        embeds: [actionEmbed('BAN GLOBAL', BAN_COLOR, 'Vous avez été banni de la communauté.', [
           logField('Raison', reason),
-          logField('Modérateur', `${interaction.user.tag} (${interaction.user.id})`),
+          logField('Modérateur', moderatorLabel(interaction)),
         ])],
       });
     } catch (error) {
@@ -284,15 +296,15 @@ export function createModerationIntegration({ client }) {
         console.error(`[Moderation] Ban failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply({
-      embeds: [actionEmbed('Bannissement global', 0xE74C3C, `Le bannissement global de ${target} a été traité.`, [
+    await safeEditReply(interaction, {
+      embeds: [actionEmbed('BAN GLOBAL', BAN_COLOR, `${target} a été banni de la communauté.`, [
+        logField('Modérateur', moderatorLabel(interaction), true),
         logField('Raison', reason, true),
-        logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
       ])],
     });
-    await sendLog('Bannissement global', 0xE74C3C, [
+    await sendLog('BAN GLOBAL', BAN_COLOR, `${target} a été banni de la communauté.`, [
       logField('Cible', `${target} (${target.id})`),
-      logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
+      logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
       logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
     ]);
@@ -316,15 +328,16 @@ export function createModerationIntegration({ client }) {
         console.error(`[Moderation] Untimeout failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply({
+    await safeEditReply(interaction, {
       embeds: [actionEmbed('Timeout retiré', 0x27AE60, `Le timeout de ${target} a été retiré partout où cela était possible.`, [
+        logField('Modérateur', moderatorLabel(interaction), true),
         logField('Raison', reason, true),
         logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
       ])],
     });
-    await sendLog('Timeout retiré', 0x27AE60, [
+    await sendLog('Timeout retiré', 0x27AE60, `${target} n’est plus mute.`, [
       logField('Cible', `${target} (${target.id})`),
-      logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
+      logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
       logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
     ]);
@@ -346,15 +359,16 @@ export function createModerationIntegration({ client }) {
         console.error(`[Moderation] Unban failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply({
+    await safeEditReply(interaction, {
       embeds: [actionEmbed('Bannissement retiré', 0x27AE60, `Le bannissement de ${target} a été retiré partout où cela était possible.`, [
+        logField('Modérateur', moderatorLabel(interaction), true),
         logField('Raison', reason, true),
         logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
       ])],
     });
-    await sendLog('Bannissement retiré', 0x27AE60, [
+    await sendLog('Bannissement retiré', 0x27AE60, `${target} n’est plus banni.`, [
       logField('Cible', `${target} (${target.id})`),
-      logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
+      logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
       logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
     ]);
@@ -368,13 +382,14 @@ export function createModerationIntegration({ client }) {
     const reason = interaction.options.getString('raison')?.trim() || 'Suppression des strikes';
     try {
       const [result] = await pool.execute(`DELETE FROM ${STRIKE_TABLE} WHERE discord_id = ?`, [target.id]);
-      await interaction.editReply({
+      await safeEditReply(interaction, {
         embeds: [actionEmbed('Strikes supprimés', 0x27AE60, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, [
+          logField('Modérateur', moderatorLabel(interaction), true),
           logField('Raison', reason, true),
           logField('Nombre supprimé', result.affectedRows, true),
         ])],
       });
-      await sendLog('Strikes supprimés', 0x27AE60, [
+      await sendLog('Strikes supprimés', 0x27AE60, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, [
         logField('Cible', `${target} (${target.id})`),
         logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
         logField('Raison', reason),
@@ -382,9 +397,9 @@ export function createModerationIntegration({ client }) {
       ]);
     } catch (error) {
       console.error('[Moderation] Unable to remove strikes:', error.message);
-      await interaction.editReply({
+      await safeEditReply(interaction, {
         embeds: [actionEmbed('Échec de suppression', 0xE74C3C, 'Impossible de supprimer les strikes.')],
-      }).catch(() => {});
+      });
     }
   }
 
