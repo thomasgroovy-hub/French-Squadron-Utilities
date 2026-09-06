@@ -465,8 +465,16 @@ export function createRobloxIntegration({ client, guildId }) {
         .setCustomId('verify_panel_check')
         .setLabel('Vérifier mon code')
         .setStyle(ButtonStyle.Success);
+      const verificationEmbed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('Code de vérification Roblox')
+        .setDescription(
+          `Place ce code dans la section **About / Bio** de ton profil Roblox :\n\n\`\`\`\n${verificationCode}\n\`\`\`\n\nTu as 15 minutes pour le placer, puis clique sur **Vérifier mon code**. Tu pourras retirer le code de ta bio après la vérification.`,
+        )
+        .setFooter({ text: 'FPCS Utilities' })
+        .setTimestamp();
       await interaction.editReply({
-        content: `Place ce code dans la section **About / Bio** de ton profil Roblox : \`${verificationCode}\`\n\nTu as 15 minutes, puis clique sur **Vérifier mon code**. Tu pourras retirer le code de ta bio après la vérification.`,
+        embeds: [verificationEmbed],
         components: [new ActionRowBuilder().addComponents(button)],
       });
       await sendVerificationLog({
