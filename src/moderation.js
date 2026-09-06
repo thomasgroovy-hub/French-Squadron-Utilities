@@ -72,6 +72,15 @@ function logField(name, value, inline = false) {
   return { name, value: String(value).slice(0, 1024) || '—', inline };
 }
 
+function actionEmbed(title, color, description, fields = []) {
+  return new EmbedBuilder()
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(description)
+    .addFields(fields)
+    .setTimestamp();
+}
+
 function parseTimeoutDuration(value) {
   const match = value.trim().toLowerCase().match(/^(\d+)([mhd])$/);
   if (!match) return null;
@@ -141,7 +150,9 @@ export function createModerationIntegration({ client }) {
 
   async function requireDatabase(interaction) {
     if (await initializeDatabase()) return true;
-    const response = { content: 'Le système de modération est temporairement indisponible.', ephemeral: true };
+    const response = {
+      embeds: [actionEmbed('Modération indisponible', 0xE74C3C, 'Le système de modération est temporairement indisponible.')],
+    };
     if (interaction.deferred || interaction.replied) await interaction.editReply(response);
     else await interaction.reply(response);
     return false;
@@ -149,12 +160,14 @@ export function createModerationIntegration({ client }) {
 
   async function requireModerationAccess(interaction) {
     if (await hasModerationAccess(interaction)) return true;
-    await interaction.editReply('Tu n’as pas le rôle nécessaire pour utiliser cette commande.');
+    await interaction.editReply({
+      embeds: [actionEmbed('Permission insuffisante', 0xE74C3C, 'Tu n’as pas le rôle nécessaire pour utiliser cette commande.')],
+    });
     return false;
   }
 
   async function handleStrike(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     if (!(await requireModerationAccess(interaction))) return;
     if (!(await requireDatabase(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
@@ -165,11 +178,21 @@ export function createModerationIntegration({ client }) {
         [target.id, interaction.user.id, reason],
       );
       try {
-        await target.send(`Tu as reçu un strike.\nRaison : ${reason}\nModérateur : ${interaction.user.tag}`);
+        await target.send({
+          embeds: [actionEmbed('Strike reçu', 0xF1C40F, 'Un strike vient de t’être attribué.', [
+            logField('Raison', reason),
+            logField('Modérateur', `${interaction.user.tag} (${interaction.user.id})`),
+          ])],
+        });
       } catch (error) {
         console.error(`[Moderation] Unable to DM strike target ${target.id}:`, error.message);
       }
-      await interaction.editReply(`Le strike de ${target} a été enregistré.`);
+      await interaction.editReply({
+        embeds: [actionEmbed('Strike enregistré', 0xF1C40F, `Le strike de ${target} a été enregistré.`, [
+          logField('Cible', `${target} (${target.id})`, true),
+          logField('Raison', reason, true),
+        ])],
+      });
       await sendLog('Strike attribué', 0xF1C40F, [
         logField('Cible', `${target} (${target.id})`),
         logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
@@ -177,19 +200,34 @@ export function createModerationIntegration({ client }) {
       ]);
     } catch (error) {
       console.error('[Moderation] Unable to create strike:', error.message);
-      await interaction.editReply('Impossible d’enregistrer le strike.').catch(() => {});
+      await interaction.editReply({
+        embeds: [actionEmbed('Échec du strike', 0xE74C3C, 'Impossible d’enregistrer le strike.')],
+      }).catch(() => {});
     }
   }
 
   async function handleTimeout(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     if (!(await requireModerationAccess(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
     const duration = parseTimeoutDuration(interaction.options.getString('duree', true));
     if (!duration) {
-      await interaction.editReply('Durée invalide. Utilise un nombre suivi de `m`, `h` ou `d`, par exemple `30m`, `1h` ou `2d` (maximum 28 jours).');
+      await interaction.editReply({
+        embeds: [actionEmbed('Durée invalide', 0xE74C3C, 'Utilise un nombre suivi de `m`, `h` ou `d`, par exemple `30m`, `1h` ou `2d` (maximum 28 jours).')],
+      });
       return;
+    }
+    try {
+      await target.send({
+        embeds: [actionEmbed('Timeout appliqué', 0xE67E22, 'Tu as été mis en timeout sur le serveur.', [
+          logField('Durée', duration.label, true),
+          logField('Raison', reason),
+          logField('Modérateur', `${interaction.user.tag} (${interaction.user.id})`),
+        ])],
+      });
+    } catch (error) {
+      console.error(`[Moderation] Unable to DM timeout target ${target.id}:`, error.message);
     }
     let succeeded = 0;
     let failed = 0;
@@ -204,7 +242,13 @@ export function createModerationIntegration({ client }) {
         console.error(`[Moderation] Timeout failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply(`Timeout de ${duration.label} appliqué à ${target} sur ${succeeded} serveur(s). Échecs : ${failed}.`);
+    await interaction.editReply({
+      embeds: [actionEmbed('Timeout appliqué', 0xE67E22, `Le timeout de ${target} a été appliqué sur les serveurs où la personne est présente.`, [
+        logField('Durée', duration.label, true),
+        logField('Raison', reason, true),
+        logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`),
+      ])],
+    });
     await sendLog('Timeout appliqué', 0xE67E22, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
@@ -215,12 +259,17 @@ export function createModerationIntegration({ client }) {
   }
 
   async function handleGlobalBan(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     if (!(await requireModerationAccess(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
     try {
-      await target.send(`Tu as été banni de la communauté.\nRaison : ${reason}\nModérateur : ${interaction.user.tag}`);
+      await target.send({
+        embeds: [actionEmbed('Bannissement global', 0xE74C3C, 'Tu as été banni de la communauté.', [
+          logField('Raison', reason),
+          logField('Modérateur', `${interaction.user.tag} (${interaction.user.id})`),
+        ])],
+      });
     } catch (error) {
       console.error(`[Moderation] Unable to DM ban target ${target.id}:`, error.message);
     }
@@ -235,7 +284,12 @@ export function createModerationIntegration({ client }) {
         console.error(`[Moderation] Ban failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply(`Bannissement global effectué sur ${succeeded} serveur(s). Échecs : ${failed}.`);
+    await interaction.editReply({
+      embeds: [actionEmbed('Bannissement global', 0xE74C3C, `Le bannissement global de ${target} a été traité.`, [
+        logField('Raison', reason, true),
+        logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
+      ])],
+    });
     await sendLog('Bannissement global', 0xE74C3C, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
@@ -245,7 +299,7 @@ export function createModerationIntegration({ client }) {
   }
 
   async function handleUntimeout(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     if (!(await requireModerationAccess(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison')?.trim() || 'Retrait du timeout';
@@ -262,7 +316,12 @@ export function createModerationIntegration({ client }) {
         console.error(`[Moderation] Untimeout failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply(`Timeout retiré pour ${target} sur ${succeeded} serveur(s). Échecs : ${failed}.`);
+    await interaction.editReply({
+      embeds: [actionEmbed('Timeout retiré', 0x27AE60, `Le timeout de ${target} a été retiré partout où cela était possible.`, [
+        logField('Raison', reason, true),
+        logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
+      ])],
+    });
     await sendLog('Timeout retiré', 0x27AE60, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
@@ -272,7 +331,7 @@ export function createModerationIntegration({ client }) {
   }
 
   async function handleUnban(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     if (!(await requireModerationAccess(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison')?.trim() || 'Retrait du bannissement';
@@ -287,7 +346,12 @@ export function createModerationIntegration({ client }) {
         console.error(`[Moderation] Unban failed in ${guild.name} (${guild.id}):`, error.message);
       }
     }
-    await interaction.editReply(`Bannissement retiré pour ${target} sur ${succeeded} serveur(s). Échecs : ${failed}.`);
+    await interaction.editReply({
+      embeds: [actionEmbed('Bannissement retiré', 0x27AE60, `Le bannissement de ${target} a été retiré partout où cela était possible.`, [
+        logField('Raison', reason, true),
+        logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
+      ])],
+    });
     await sendLog('Bannissement retiré', 0x27AE60, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
@@ -297,14 +361,19 @@ export function createModerationIntegration({ client }) {
   }
 
   async function handleRemoveStrike(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     if (!(await requireModerationAccess(interaction))) return;
     if (!(await requireDatabase(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison')?.trim() || 'Suppression des strikes';
     try {
       const [result] = await pool.execute(`DELETE FROM ${STRIKE_TABLE} WHERE discord_id = ?`, [target.id]);
-      await interaction.editReply(`${result.affectedRows} strike(s) supprimé(s) pour ${target}.`);
+      await interaction.editReply({
+        embeds: [actionEmbed('Strikes supprimés', 0x27AE60, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, [
+          logField('Raison', reason, true),
+          logField('Nombre supprimé', result.affectedRows, true),
+        ])],
+      });
       await sendLog('Strikes supprimés', 0x27AE60, [
         logField('Cible', `${target} (${target.id})`),
         logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
@@ -313,7 +382,9 @@ export function createModerationIntegration({ client }) {
       ]);
     } catch (error) {
       console.error('[Moderation] Unable to remove strikes:', error.message);
-      await interaction.editReply('Impossible de supprimer les strikes.').catch(() => {});
+      await interaction.editReply({
+        embeds: [actionEmbed('Échec de suppression', 0xE74C3C, 'Impossible de supprimer les strikes.')],
+      }).catch(() => {});
     }
   }
 
