@@ -16,6 +16,8 @@ import { Tunnel } from 'cloudflared';
 
 const ROBLOX_USERNAME_LOOKUP_URL = 'https://users.roblox.com/v1/usernames/users';
 const ROBLOX_USER_URL = 'https://users.roblox.com/v1/users/';
+const ROBLOX_AVATAR_URL = 'https://thumbnails.roblox.com/v1/users/avatar-headshot?format=Png&size=420x420&userIds=';
+const VERIFICATION_LOG_CHANNEL_ID = '1472293282217328828';
 const VERIFICATION_CODE_LENGTH = 6;
 const VERIFICATION_EXPIRY_MINUTES = 15;
 const DATABASE_RETRY_DELAY_MS = 60_000;
@@ -39,6 +41,9 @@ export const robloxCommands = [
       .setDescription('Pseudo Roblox à rechercher')
       .setRequired(false)
       .setMaxLength(20)),
+  new SlashCommandBuilder()
+    .setName('unlink')
+    .setDescription('Détache ton compte Roblox de ton compte Discord.'),
 ];
 
 class RobloxApiError extends Error {
@@ -191,6 +196,13 @@ async function getRobloxProfile(robloxUserId) {
   };
 }
 
+async function getRobloxAvatarUrl(robloxUserId) {
+  const data = await fetchRobloxJson(`${ROBLOX_AVATAR_URL}${robloxUserId}`);
+  const imageUrl = data.data?.[0]?.imageUrl;
+  if (!imageUrl) throw new RobloxApiError('network', 'Roblox did not return an avatar.');
+  return imageUrl;
+}
+
 function robloxErrorMessage(error) {
   if (error instanceof RobloxApiError) {
     if (error.kind === 'notFound') return 'Compte Roblox introuvable. Vérifie le nom d’utilisateur et réessaie.';
@@ -301,6 +313,28 @@ export function createRobloxIntegration({ client, guildId }) {
   function markDatabaseUnavailable(error) {
     databaseReady = false;
     console.error('[Roblox] MySQL operation failed. Roblox functionality is temporarily unavailable:', error.message);
+  }
+
+  async function sendVerificationLog({ title, color, interaction, description, fields }) {
+    try {
+      const channel = await client.channels.fetch(VERIFICATION_LOG_CHANNEL_ID);
+      if (!channel?.isTextBased() || !channel.isSendable() || channel.guildId !== guildId) {
+        throw new Error(`Verification log channel ${VERIFICATION_LOG_CHANNEL_ID} is unavailable.`);
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(color)
+        .setTitle(title)
+        .setDescription(description)
+        .addFields(
+          { name: 'Discord', value: `${interaction.user} (${interaction.user.tag}, ${interaction.user.id})`, inline: false },
+          ...fields,
+        )
+        .setTimestamp();
+      await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+    } catch (error) {
+      console.error('[Roblox] Unable to send verification log:', error.message);
+    }
   }
 
   async function createPendingLink(discordUserId, robloxUser) {
@@ -416,6 +450,13 @@ export function createRobloxIntegration({ client, guildId }) {
         content: `Place ce code dans la section **About / Bio** de ton profil Roblox : \`${verificationCode}\`\n\nTu as 15 minutes, puis clique sur **Vérifier mon code**. Tu pourras retirer le code de ta bio après la vérification.`,
         components: [new ActionRowBuilder().addComponents(button)],
       });
+      await sendVerificationLog({
+        title: 'Demande de liaison initiée',
+        color: 0x3498DB,
+        interaction,
+        description: 'Une demande de vérification Roblox a été créée.',
+        fields: [{ name: 'Pseudo Roblox visé', value: robloxUser.username, inline: true }],
+      });
     } catch (error) {
       if (error instanceof RobloxApiError) {
         await interaction.editReply(robloxErrorMessage(error));
@@ -504,6 +545,16 @@ export function createRobloxIntegration({ client, guildId }) {
       await interaction.editReply(
         `Liaison réussie : **${profile.username}** est maintenant associé à ton compte Discord. Ton tag interne est **#${verificationRank}**. Tu peux retirer le code de ta bio Roblox.`,
       );
+      await sendVerificationLog({
+        title: 'Vérification Roblox réussie',
+        color: 0x2ECC71,
+        interaction,
+        description: 'Une liaison Discord-Roblox a été confirmée.',
+        fields: [
+          { name: 'Pseudo Roblox', value: profile.username, inline: true },
+          { name: 'Tag interne', value: `#${verificationRank}`, inline: true },
+        ],
+      });
     } catch (error) {
       if (error instanceof RobloxApiError) {
         await interaction.editReply(robloxErrorMessage(error));
@@ -511,6 +562,36 @@ export function createRobloxIntegration({ client, guildId }) {
       }
       markDatabaseUnavailable(error);
       await interaction.editReply('Impossible de vérifier la liaison pour le moment. Réessaie plus tard.');
+    }
+  }
+
+  async function handleUnlink(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+    if (!(await requireDatabase(interaction))) return;
+
+    try {
+      const [links] = await pool.execute(
+        'SELECT roblox_username FROM roblox_discord_links WHERE discord_user_id = ? LIMIT 1',
+        [interaction.user.id],
+      );
+      const link = links[0];
+      if (!link) {
+        await interaction.editReply('Aucun compte Roblox n’est actuellement lié à ton compte Discord.');
+        return;
+      }
+
+      await pool.execute('DELETE FROM roblox_discord_links WHERE discord_user_id = ?', [interaction.user.id]);
+      await interaction.editReply(`La liaison avec **${link.roblox_username}** a été supprimée avec succès.`);
+      await sendVerificationLog({
+        title: 'Liaison Roblox supprimée',
+        color: 0xE67E22,
+        interaction,
+        description: 'Un utilisateur a détaché son compte Roblox.',
+        fields: [{ name: 'Pseudo Roblox', value: link.roblox_username, inline: true }],
+      });
+    } catch (error) {
+      markDatabaseUnavailable(error);
+      await interaction.editReply('Impossible de supprimer la liaison pour le moment. Réessaie plus tard.');
     }
   }
 
@@ -593,6 +674,16 @@ export function createRobloxIntegration({ client, guildId }) {
       }
 
       const discordCreated = accountAge(resolvedDiscordUser?.createdAt);
+      let avatarUrl = null;
+      if (discordUser) {
+        try {
+          avatarUrl = await getRobloxAvatarUrl(link.roblox_user_id);
+        } catch (error) {
+          robloxError ??= robloxErrorMessage(error);
+        }
+      } else {
+        avatarUrl = resolvedDiscordUser?.displayAvatarURL({ extension: 'png', size: 256 }) ?? null;
+      }
       const embed = new EmbedBuilder()
         .setColor(0x5865F2)
         .setTitle('Liaison vérifiée')
@@ -604,6 +695,7 @@ export function createRobloxIntegration({ client, guildId }) {
           { name: 'Âge du compte Roblox', value: robloxAge ? `<t:${Math.floor(new Date(profile.created).getTime() / 1000)}:D> (${robloxAge})` : `Information indisponible${robloxError ? ` : ${robloxError}` : '.'}`, inline: false },
         )
         .setFooter({ text: 'French Squadron Utilities' });
+      if (avatarUrl) embed.setThumbnail(avatarUrl);
       await interaction.editReply({ embeds: [embed] });
     } catch (error) {
       markDatabaseUnavailable(error);
@@ -620,6 +712,10 @@ export function createRobloxIntegration({ client, guildId }) {
       }
       if (interaction.commandName === 'who-is') {
         await handleWhoIs(interaction);
+        return true;
+      }
+      if (interaction.commandName === 'unlink') {
+        await handleUnlink(interaction);
         return true;
       }
     }
