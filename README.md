@@ -24,6 +24,16 @@ Le rang interne est attribué automatiquement et n'est jamais réutilisé, même
 - `/unban utilisateur:<membre> raison:<raison>` : retire le bannissement sur tous les serveurs où le bot peut le faire.
 - `/removestrike utilisateur:<membre> raison:<raison>` : supprime tous les strikes enregistrés pour la personne ciblée.
 
+Les confirmations de `/strikes`, `/timeout` et `/globalban` sont publiques dans le salon où la commande est exécutée. Elles sont également envoyées dans le salon de logs. Les détails techniques du traitement multi-serveurs restent réservés aux logs.
+
+Les sanctions utilisent des embeds sobres et cohérents, sans emoji, avec le footer `FPCS Utilities` et un timestamp Discord natif :
+
+- Strike : ambre `#D99A2B`.
+- Timeout : bleu-gris `#607D8B`.
+- Ban global : rouge sobre `#B34747`.
+
+Les DMs de strike, timeout et ban sont aussi envoyés en embeds. Ils contiennent le modérateur, la raison et, pour un timeout, la durée. Les actions `/untimeout`, `/unban` et `/removestrike` utilisent la même présentation et sont journalisées.
+
 Les commandes de modération gèrent chaque serveur séparément : une erreur sur un serveur n'empêche pas l'action sur les autres.
 
 ## Permissions
