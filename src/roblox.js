@@ -280,7 +280,7 @@ export function createRobloxIntegration({ client, guildId }) {
         await connection.execute(
           `INSERT INTO roblox_pending_links
             (discord_user_id, roblox_user_id, roblox_username, verification_code, expires_at)
-           VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ${VERIFICATION_EXPIRY_MINUTES} MINUTE))`,
+           VALUES (?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ${VERIFICATION_EXPIRY_MINUTES} MINUTE))`,
           [discordUserId, robloxUser.id, robloxUser.username, verificationCode],
         );
         await connection.commit();
@@ -319,7 +319,7 @@ export function createRobloxIntegration({ client, guildId }) {
       }
 
       await pool.execute(
-        'DELETE FROM roblox_pending_links WHERE roblox_user_id = ? AND expires_at <= NOW()',
+        'DELETE FROM roblox_pending_links WHERE roblox_user_id = ? AND expires_at <= UTC_TIMESTAMP()',
         [robloxUser.id],
       );
       const [existingPendingLinks] = await pool.execute(
@@ -382,7 +382,16 @@ export function createRobloxIntegration({ client, guildId }) {
 
     try {
       const [pendingLinks] = await pool.execute(
-        'SELECT roblox_user_id, roblox_username, verification_code, expires_at FROM roblox_pending_links WHERE discord_user_id = ? LIMIT 1',
+        `SELECT
+           roblox_user_id,
+           roblox_username,
+           verification_code,
+           DATE_FORMAT(expires_at, '%Y-%m-%d %H:%i:%s') AS expires_at_utc,
+           DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d %H:%i:%s') AS checked_at_utc,
+           TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), expires_at) AS seconds_remaining
+         FROM roblox_pending_links
+         WHERE discord_user_id = ?
+         LIMIT 1`,
         [interaction.user.id],
       );
       const pendingLink = pendingLinks[0];
@@ -392,7 +401,13 @@ export function createRobloxIntegration({ client, guildId }) {
         return;
       }
 
-      if (new Date(pendingLink.expires_at).getTime() <= Date.now()) {
+      console.log(
+        `[Roblox] Verification expiry check for Discord user ${interaction.user.id}: `
+        + `expires_at_utc=${pendingLink.expires_at_utc}, checked_at_utc=${pendingLink.checked_at_utc}, `
+        + `seconds_remaining=${pendingLink.seconds_remaining}.`,
+      );
+
+      if (Number(pendingLink.seconds_remaining) <= 0) {
         await pool.execute('DELETE FROM roblox_pending_links WHERE discord_user_id = ?', [interaction.user.id]);
         await interaction.editReply('Ton code a expiré. Utilise `/link <roblox username>` pour en générer un nouveau.');
         return;
