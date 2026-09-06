@@ -76,13 +76,20 @@ function logField(name, value, inline = false) {
   return { name, value: String(value).slice(0, 1024) || '—', inline };
 }
 
-function actionEmbed(title, color, description, fields = []) {
+function actionEmbed(title, color, action = '', moderator = '—', reason = '—', extraText = '') {
+  const description = [
+    action,
+    `**Modérateur :** ${moderator}`,
+    EMBED_SEPARATOR,
+    `**Raison :** ${reason}`,
+    extraText,
+  ].filter(Boolean).join('\n');
+
   return new EmbedBuilder()
     .setColor(color)
     .setTitle(title)
     .setDescription(description)
-    .addFields({ name: '\u200b', value: EMBED_SEPARATOR }, ...fields)
-    .setFooter({ text: 'French Squadron Utilities' })
+    .setFooter({ text: 'FPCS Utilities' })
     .setTimestamp();
 }
 
@@ -156,8 +163,14 @@ export function createModerationIntegration({ client }) {
       if (!channel?.isTextBased() || !channel.isSendable() || channel.guildId !== MODERATION_GUILD_ID) {
         throw new Error(`Log channel ${LOG_CHANNEL_ID} is unavailable.`);
       }
+      const moderator = fields.find((field) => field.name === 'Modérateur')?.value ?? '—';
+      const reason = fields.find((field) => field.name === 'Raison')?.value ?? '—';
+      const extraText = fields
+        .filter((field) => field.name !== 'Modérateur' && field.name !== 'Raison')
+        .map((field) => `**${field.name} :** ${field.value}`)
+        .join('\n');
       await channel.send({
-        embeds: [actionEmbed(title, color, description, fields)],
+        embeds: [actionEmbed(title, color, description, moderator, reason, extraText)],
         allowedMentions: { parse: [] },
       });
     } catch (error) {
@@ -196,17 +209,13 @@ export function createModerationIntegration({ client }) {
       );
       try {
         await target.send({
-          embeds: [actionEmbed(`STRIKE — ${interaction.user.tag}`, STRIKE_COLOR, 'Un strike vous a été attribué pour la raison suivante :\n\n' + reason)],
+          embeds: [actionEmbed('Un strike vous a été attribué.', STRIKE_COLOR, '', moderatorLabel(interaction), reason)],
         });
       } catch (error) {
         console.error(`[Moderation] Unable to DM strike target ${target.id}:`, error.message);
       }
       await safeEditReply(interaction, {
-        embeds: [actionEmbed('STRIKE', STRIKE_COLOR, `${target} a reçu un strike.`, [
-          logField('Modérateur', moderatorLabel(interaction), true),
-          logField('Cible', `${target} (${target.id})`, true),
-          logField('Raison', reason, true),
-        ])],
+        embeds: [actionEmbed('Un strike a été attribué', STRIKE_COLOR, `${target} a reçu un strike.`, moderatorLabel(interaction), reason)],
       });
       await sendLog('STRIKE', STRIKE_COLOR, `${target} a reçu un strike.`, [
         logField('Cible', `${target} (${target.id})`),
@@ -247,21 +256,14 @@ export function createModerationIntegration({ client }) {
     if (succeeded > 0) {
       try {
         await target.send({
-          embeds: [actionEmbed('TIMEOUT', TIMEOUT_COLOR, 'Vous avez été mis en timeout.', [
-            logField('Durée', duration.label, true),
-            logField('Raison', reason),
-            logField('Modérateur', moderatorLabel(interaction)),
-          ])],
+          embeds: [actionEmbed('Vous avez été mis en timeout.', TIMEOUT_COLOR, `Vous êtes mute pour ${duration.label}.`, moderatorLabel(interaction), reason)],
         });
       } catch (error) {
         console.error(`[Moderation] Unable to DM timeout target ${target.id}:`, error.message);
       }
     }
     await safeEditReply(interaction, {
-      embeds: [actionEmbed('TIMEOUT', TIMEOUT_COLOR, `${target} est mute pour ${duration.label}.`, [
-        logField('Modérateur', moderatorLabel(interaction), true),
-        logField('Raison', reason, true),
-      ])],
+      embeds: [actionEmbed('TIMEOUT', TIMEOUT_COLOR, `${target} est mute pour ${duration.label}.`, moderatorLabel(interaction), reason)],
     });
     await sendLog('TIMEOUT', TIMEOUT_COLOR, `${target} est mute pour ${duration.label}.`, [
       logField('Modérateur', moderatorLabel(interaction)),
@@ -277,10 +279,7 @@ export function createModerationIntegration({ client }) {
     const reason = interaction.options.getString('raison', true).trim();
     try {
       await target.send({
-        embeds: [actionEmbed('BAN GLOBAL', BAN_COLOR, 'Vous avez été banni de la communauté.', [
-          logField('Raison', reason),
-          logField('Modérateur', moderatorLabel(interaction)),
-        ])],
+        embeds: [actionEmbed('Vous avez été banni.', BAN_COLOR, 'Votre bannissement global a été appliqué.', moderatorLabel(interaction), reason)],
       });
     } catch (error) {
       console.error(`[Moderation] Unable to DM ban target ${target.id}:`, error.message);
@@ -297,10 +296,7 @@ export function createModerationIntegration({ client }) {
       }
     }
     await safeEditReply(interaction, {
-      embeds: [actionEmbed('BAN GLOBAL', BAN_COLOR, `${target} a été banni de la communauté.`, [
-        logField('Modérateur', moderatorLabel(interaction), true),
-        logField('Raison', reason, true),
-      ])],
+      embeds: [actionEmbed('BAN GLOBAL', BAN_COLOR, `${target} a été banni de la communauté.`, moderatorLabel(interaction), reason)],
     });
     await sendLog('BAN GLOBAL', BAN_COLOR, `${target} a été banni de la communauté.`, [
       logField('Cible', `${target} (${target.id})`),
@@ -329,11 +325,7 @@ export function createModerationIntegration({ client }) {
       }
     }
     await safeEditReply(interaction, {
-      embeds: [actionEmbed('Timeout retiré', 0x27AE60, `Le timeout de ${target} a été retiré partout où cela était possible.`, [
-        logField('Modérateur', moderatorLabel(interaction), true),
-        logField('Raison', reason, true),
-        logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
-      ])],
+      embeds: [actionEmbed('Timeout retiré', 0x27AE60, `Le timeout de ${target} a été retiré partout où cela était possible.`, moderatorLabel(interaction), reason, `**Résultat :** ${succeeded} réussi(s), ${failed} échec(s)`)],
     });
     await sendLog('Timeout retiré', 0x27AE60, `${target} n’est plus mute.`, [
       logField('Cible', `${target} (${target.id})`),
@@ -360,11 +352,7 @@ export function createModerationIntegration({ client }) {
       }
     }
     await safeEditReply(interaction, {
-      embeds: [actionEmbed('Bannissement retiré', 0x27AE60, `Le bannissement de ${target} a été retiré partout où cela était possible.`, [
-        logField('Modérateur', moderatorLabel(interaction), true),
-        logField('Raison', reason, true),
-        logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
-      ])],
+      embeds: [actionEmbed('Bannissement retiré', 0x27AE60, `Le bannissement de ${target} a été retiré partout où cela était possible.`, moderatorLabel(interaction), reason, `**Résultat :** ${succeeded} réussi(s), ${failed} échec(s)`)],
     });
     await sendLog('Bannissement retiré', 0x27AE60, `${target} n’est plus banni.`, [
       logField('Cible', `${target} (${target.id})`),
@@ -383,11 +371,7 @@ export function createModerationIntegration({ client }) {
     try {
       const [result] = await pool.execute(`DELETE FROM ${STRIKE_TABLE} WHERE discord_id = ?`, [target.id]);
       await safeEditReply(interaction, {
-        embeds: [actionEmbed('Strikes supprimés', 0x27AE60, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, [
-          logField('Modérateur', moderatorLabel(interaction), true),
-          logField('Raison', reason, true),
-          logField('Nombre supprimé', result.affectedRows, true),
-        ])],
+        embeds: [actionEmbed('Strikes supprimés', 0x27AE60, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, moderatorLabel(interaction), reason, `**Nombre supprimé :** ${result.affectedRows}`)],
       });
       await sendLog('Strikes supprimés', 0x27AE60, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, [
         logField('Cible', `${target} (${target.id})`),
