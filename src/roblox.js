@@ -1,7 +1,17 @@
 import express from 'express';
 import mysql from 'mysql2/promise';
 import { randomInt, timingSafeEqual } from 'node:crypto';
-import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  ModalBuilder,
+  PermissionsBitField,
+  SlashCommandBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} from 'discord.js';
 import { Tunnel } from 'cloudflared';
 
 const ROBLOX_USERNAME_LOOKUP_URL = 'https://users.roblox.com/v1/usernames/users';
@@ -14,17 +24,21 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export const robloxCommands = [
   new SlashCommandBuilder()
-    .setName('link')
-    .setDescription('Lie ton compte Roblox à ton compte Discord.')
-    .addStringOption((option) => option
-      .setName('roblox-username')
-      .setDescription('Ton nom d’utilisateur Roblox exact')
-      .setRequired(true)
-      .setMinLength(3)
-      .setMaxLength(20)),
+    .setName('verification-panel')
+    .setDescription('Poste le panneau de vérification Roblox.')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator.toString()),
   new SlashCommandBuilder()
-    .setName('verify')
-    .setDescription('Vérifie le code placé dans ta bio Roblox.'),
+    .setName('who-is')
+    .setDescription('Recherche la liaison Discord ou Roblox d’une personne.')
+    .addUserOption((option) => option
+      .setName('discord')
+      .setDescription('Membre Discord à rechercher')
+      .setRequired(false))
+    .addStringOption((option) => option
+      .setName('roblox')
+      .setDescription('Pseudo Roblox à rechercher')
+      .setRequired(false)
+      .setMaxLength(20)),
 ];
 
 class RobloxApiError extends Error {
@@ -169,8 +183,11 @@ async function getRobloxProfile(robloxUserId) {
   }
 
   return {
+    id: user.id,
     username: user.name,
+    displayName: user.displayName || user.name,
     description: user.description || '',
+    created: user.created || null,
   };
 }
 
@@ -230,6 +247,16 @@ export function createRobloxIntegration({ client, guildId }) {
             verified_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
+        const [linkColumns] = await pool.query(
+          `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'roblox_discord_links'
+             AND COLUMN_NAME = 'verification_rank'`,
+        );
+        if (!linkColumns.length) {
+          await pool.query(
+            'ALTER TABLE roblox_discord_links ADD COLUMN verification_rank BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE AFTER discord_user_id',
+          );
+        }
         await pool.query(`
           CREATE TABLE IF NOT EXISTS roblox_pending_links (
             discord_user_id VARCHAR(20) NOT NULL PRIMARY KEY,
@@ -302,32 +329,75 @@ export function createRobloxIntegration({ client, guildId }) {
     throw new Error('Unable to generate a unique verification code.');
   }
 
-  async function handleLink(interaction) {
+  async function databaseAvailable(interaction) {
+    if (await initializeDatabase()) return true;
+    await interaction.reply({ content: 'Le système de vérification Roblox est temporairement indisponible. Réessaie plus tard.', ephemeral: true });
+    return false;
+  }
+
+  async function handleVerificationPanel(interaction) {
+    if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+      await interaction.reply({ content: 'Tu dois être administrateur pour poster le panneau de vérification.', ephemeral: true });
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('Vérifie ton Roblox')
+      .setDescription('Le bot te demandera d’inscrire ton utilisateur Roblox et de mettre un code dans ta bio Roblox. Clique sur « Vérifier mon code » après afin de vérifier la manipulation.');
+    const button = new ButtonBuilder()
+      .setCustomId('verify_panel_start')
+      .setLabel('Se vérifier')
+      .setStyle(ButtonStyle.Primary);
+    await interaction.reply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(button)] });
+  }
+
+  async function handleVerificationStart(interaction) {
+    if (!(await databaseAvailable(interaction))) return;
+    try {
+      const [links] = await pool.execute(
+        'SELECT roblox_username FROM roblox_discord_links WHERE discord_user_id = ? LIMIT 1',
+        [interaction.user.id],
+      );
+      if (links[0]) {
+        await interaction.reply({ content: `Tu es déjà vérifié avec le compte Roblox lié : **${links[0].roblox_username}**.`, ephemeral: true });
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId('verify_panel_username').setTitle('Vérifie ton Roblox');
+      const usernameInput = new TextInputBuilder()
+        .setCustomId('roblox_username')
+        .setLabel('Pseudo Roblox')
+        .setPlaceholder('Ton nom d’utilisateur Roblox')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMinLength(3)
+        .setMaxLength(20);
+      modal.addComponents(new ActionRowBuilder().addComponents(usernameInput));
+      await interaction.showModal(modal);
+    } catch (error) {
+      markDatabaseUnavailable(error);
+      await interaction.reply({ content: 'Impossible de démarrer la vérification. Réessaie plus tard.', ephemeral: true }).catch(() => {});
+    }
+  }
+
+  async function handleVerificationUsername(interaction) {
     await interaction.deferReply({ ephemeral: true });
     if (!(await requireDatabase(interaction))) return;
 
-    const requestedUsername = interaction.options.getString('roblox-username', true).trim();
     try {
+      const requestedUsername = interaction.fields.getTextInputValue('roblox_username').trim();
       const robloxUser = await findRobloxUser(requestedUsername);
       const [existingLinks] = await pool.execute(
         'SELECT discord_user_id FROM roblox_discord_links WHERE roblox_user_id = ? LIMIT 1',
         [robloxUser.id],
       );
-
       if (existingLinks[0] && existingLinks[0].discord_user_id !== interaction.user.id) {
         await interaction.editReply('Ce compte Roblox est déjà lié à un autre compte Discord.');
         return;
       }
 
-      if (existingLinks[0]?.discord_user_id === interaction.user.id) {
-        await interaction.editReply(`**${robloxUser.username}** est déjà lié à ton compte Discord.`);
-        return;
-      }
-
-      await pool.execute(
-        'DELETE FROM roblox_pending_links WHERE roblox_user_id = ? AND expires_at <= UTC_TIMESTAMP()',
-        [robloxUser.id],
-      );
+      await pool.execute('DELETE FROM roblox_pending_links WHERE roblox_user_id = ? AND expires_at <= UTC_TIMESTAMP()', [robloxUser.id]);
       const [existingPendingLinks] = await pool.execute(
         'SELECT discord_user_id FROM roblox_pending_links WHERE roblox_user_id = ? LIMIT 1',
         [robloxUser.id],
@@ -338,16 +408,21 @@ export function createRobloxIntegration({ client, guildId }) {
       }
 
       const verificationCode = await createPendingLink(interaction.user.id, robloxUser);
-      await interaction.editReply(
-        `Place ce code dans la section **About / Bio** de ton profil Roblox : \`${verificationCode}\`\n\nEnsuite, utilise \`/verify\` dans les 15 minutes. Ne partage pas ce code; tu pourras le retirer de ta bio après la vérification.`,
-      );
+      const button = new ButtonBuilder()
+        .setCustomId('verify_panel_check')
+        .setLabel('Vérifier mon code')
+        .setStyle(ButtonStyle.Success);
+      await interaction.editReply({
+        content: `Place ce code dans la section **About / Bio** de ton profil Roblox : \`${verificationCode}\`\n\nTu as 15 minutes, puis clique sur **Vérifier mon code**. Tu pourras retirer le code de ta bio après la vérification.`,
+        components: [new ActionRowBuilder().addComponents(button)],
+      });
     } catch (error) {
       if (error instanceof RobloxApiError) {
         await interaction.editReply(robloxErrorMessage(error));
         return;
       }
       markDatabaseUnavailable(error);
-      await interaction.editReply('Impossible de créer la demande de liaison. Réessaie plus tard.');
+      await interaction.editReply('Impossible de créer la demande de vérification. Réessaie plus tard.');
     }
   }
 
@@ -366,14 +441,14 @@ export function createRobloxIntegration({ client, guildId }) {
       }
 
       await connection.execute('DELETE FROM roblox_discord_links WHERE discord_user_id = ?', [discordUserId]);
-      await connection.execute(
+      const [insertResult] = await connection.execute(
         `INSERT INTO roblox_discord_links (discord_user_id, roblox_user_id, roblox_username)
          VALUES (?, ?, ?)`,
         [discordUserId, pendingLink.roblox_user_id, robloxUsername],
       );
       await connection.execute('DELETE FROM roblox_pending_links WHERE discord_user_id = ?', [discordUserId]);
       await connection.commit();
-      return true;
+      return insertResult.insertId;
     } catch (error) {
       await connection.rollback();
       throw error;
@@ -382,7 +457,7 @@ export function createRobloxIntegration({ client, guildId }) {
     }
   }
 
-  async function handleVerify(interaction) {
+  async function handleVerificationCheck(interaction) {
     await interaction.deferReply({ ephemeral: true });
     if (!(await requireDatabase(interaction))) return;
 
@@ -392,8 +467,7 @@ export function createRobloxIntegration({ client, guildId }) {
            roblox_user_id,
            roblox_username,
            verification_code,
-           DATE_FORMAT(expires_at, '%Y-%m-%d %H:%i:%s') AS expires_at_utc,
-           DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d %H:%i:%s') AS checked_at_utc,
+           expires_at,
            TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), expires_at) AS seconds_remaining
          FROM roblox_pending_links
          WHERE discord_user_id = ?
@@ -403,19 +477,13 @@ export function createRobloxIntegration({ client, guildId }) {
       const pendingLink = pendingLinks[0];
 
       if (!pendingLink) {
-        await interaction.editReply('Aucune demande de liaison active. Utilise d’abord `/link <roblox username>`.');
+        await interaction.editReply('Aucune demande de liaison active. Clique sur le bouton principal du panneau pour recommencer.');
         return;
       }
 
-      console.log(
-        `[Roblox] Verification expiry check for Discord user ${interaction.user.id}: `
-        + `expires_at_utc=${pendingLink.expires_at_utc}, checked_at_utc=${pendingLink.checked_at_utc}, `
-        + `seconds_remaining=${pendingLink.seconds_remaining}.`,
-      );
-
       if (Number(pendingLink.seconds_remaining) <= 0) {
         await pool.execute('DELETE FROM roblox_pending_links WHERE discord_user_id = ?', [interaction.user.id]);
-        await interaction.editReply('Ton code a expiré. Utilise `/link <roblox username>` pour en générer un nouveau.');
+        await interaction.editReply('Ton code a expiré. Clique sur le bouton principal du panneau pour en générer un nouveau.');
         return;
       }
 
@@ -427,14 +495,14 @@ export function createRobloxIntegration({ client, guildId }) {
         return;
       }
 
-      const saved = await saveVerifiedLink(interaction.user.id, pendingLink, profile.username);
-      if (!saved) {
+      const verificationRank = await saveVerifiedLink(interaction.user.id, pendingLink, profile.username);
+      if (!verificationRank) {
         await interaction.editReply('Ce compte Roblox vient d’être lié à un autre compte Discord.');
         return;
       }
 
       await interaction.editReply(
-        `Liaison réussie : **${profile.username}** est maintenant associé à ton compte Discord. Tu peux retirer le code de ta bio Roblox.`,
+        `Liaison réussie : **${profile.username}** est maintenant associé à ton compte Discord. Ton tag interne est **#${verificationRank}**. Tu peux retirer le code de ta bio Roblox.`,
       );
     } catch (error) {
       if (error instanceof RobloxApiError) {
@@ -446,15 +514,127 @@ export function createRobloxIntegration({ client, guildId }) {
     }
   }
 
-  async function handleRobloxInteraction(interaction) {
-    if (!interaction.isChatInputCommand() || interaction.guildId !== guildId) return false;
-
-    if (interaction.commandName === 'link') {
-      await handleLink(interaction);
-      return true;
+  function accountAge(createdAt) {
+    const created = new Date(createdAt);
+    if (Number.isNaN(created.getTime())) return null;
+    const now = new Date();
+    let years = now.getUTCFullYear() - created.getUTCFullYear();
+    let months = now.getUTCMonth() - created.getUTCMonth();
+    let days = now.getUTCDate() - created.getUTCDate();
+    if (days < 0) {
+      months -= 1;
+      days += new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)).getUTCDate();
     }
-    if (interaction.commandName === 'verify') {
-      await handleVerify(interaction);
+    if (months < 0) {
+      years -= 1;
+      months += 12;
+    }
+    const parts = [];
+    if (years) parts.push(`${years} an${years > 1 ? 's' : ''}`);
+    if (months) parts.push(`${months} mois`);
+    if (!parts.length || days) parts.push(`${days} jour${days > 1 ? 's' : ''}`);
+    return `${created.toLocaleDateString('fr-FR')} (${parts.join(', ')})`;
+  }
+
+  async function handleWhoIs(interaction) {
+    const discordUser = interaction.options.getUser('discord');
+    const requestedRoblox = interaction.options.getString('roblox')?.trim();
+    if (!discordUser && !requestedRoblox) {
+      await interaction.reply({ content: 'Renseigne au moins l’un des champs `discord` ou `roblox`.', ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    if (!(await requireDatabase(interaction))) return;
+
+    try {
+      let link;
+      if (discordUser) {
+        const [links] = await pool.execute(
+          `SELECT discord_user_id, roblox_user_id, roblox_username, verification_rank
+           FROM roblox_discord_links WHERE discord_user_id = ? LIMIT 1`,
+          [discordUser.id],
+        );
+        link = links[0];
+      } else {
+        const [links] = await pool.execute(
+          `SELECT discord_user_id, roblox_user_id, roblox_username, verification_rank
+           FROM roblox_discord_links
+           WHERE LOWER(roblox_username) = LOWER(?) LIMIT 1`,
+          [requestedRoblox],
+        );
+        link = links[0];
+      }
+
+      if (!link) {
+        await interaction.editReply(discordUser
+          ? 'Cette personne n’est pas vérifiée ou sa liaison est introuvable.'
+          : 'Aucune liaison vérifiée ne correspond à ce pseudo Roblox.');
+        return;
+      }
+
+      let resolvedDiscordUser = discordUser;
+      if (!resolvedDiscordUser) {
+        try {
+          resolvedDiscordUser = await interaction.client.users.fetch(link.discord_user_id);
+        } catch {
+          resolvedDiscordUser = null;
+        }
+      }
+
+      let profile = null;
+      let robloxAge = null;
+      let robloxError = null;
+      try {
+        profile = await getRobloxProfile(link.roblox_user_id);
+        robloxAge = accountAge(profile.created);
+      } catch (error) {
+        robloxError = robloxErrorMessage(error);
+      }
+
+      const discordCreated = accountAge(resolvedDiscordUser?.createdAt);
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('Liaison vérifiée')
+        .addFields(
+          { name: 'Discord', value: resolvedDiscordUser ? `${resolvedDiscordUser} (${resolvedDiscordUser.tag})` : `<@${link.discord_user_id}>`, inline: true },
+          { name: 'Roblox', value: profile ? `**${profile.username}**${profile.displayName !== profile.username ? ` (${profile.displayName})` : ''}` : `**${link.roblox_username}**`, inline: true },
+          { name: 'Tag de vérification', value: `#${link.verification_rank}`, inline: true },
+          { name: 'Âge du compte Discord', value: discordCreated ? `<t:${Math.floor(resolvedDiscordUser.createdTimestamp / 1000)}:D> (${discordCreated})` : 'Information indisponible', inline: false },
+          { name: 'Âge du compte Roblox', value: robloxAge ? `<t:${Math.floor(new Date(profile.created).getTime() / 1000)}:D> (${robloxAge})` : `Information indisponible${robloxError ? ` : ${robloxError}` : '.'}`, inline: false },
+        )
+        .setFooter({ text: 'French Squadron Utilities' });
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      markDatabaseUnavailable(error);
+      await interaction.editReply('Impossible d’effectuer cette recherche pour le moment. Réessaie plus tard.');
+    }
+  }
+
+  async function handleRobloxInteraction(interaction) {
+    if (interaction.guildId !== guildId) return false;
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'verification-panel') {
+        await handleVerificationPanel(interaction);
+        return true;
+      }
+      if (interaction.commandName === 'who-is') {
+        await handleWhoIs(interaction);
+        return true;
+      }
+    }
+    if (interaction.isButton()) {
+      if (interaction.customId === 'verify_panel_start') {
+        await handleVerificationStart(interaction);
+        return true;
+      }
+      if (interaction.customId === 'verify_panel_check') {
+        await handleVerificationCheck(interaction);
+        return true;
+      }
+    }
+    if (interaction.isModalSubmit() && interaction.customId === 'verify_panel_username') {
+      await handleVerificationUsername(interaction);
       return true;
     }
     return false;
