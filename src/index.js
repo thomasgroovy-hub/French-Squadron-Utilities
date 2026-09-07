@@ -1,11 +1,8 @@
 import 'dotenv/config';
 import {
-  ActionRowBuilder,
   Client,
-  EmbedBuilder,
   Events,
   GatewayIntentBits,
-  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -15,7 +12,6 @@ import { createRobloxIntegration, robloxCommands } from './roblox.js';
 
 const GUILD_ID = '1454217001626243288';
 const MODERATION_GUILD_ID = '1487258655840669807';
-const LOG_CHANNEL_ID = '1546193398388494336';
 
 const commands = [
   new SlashCommandBuilder()
@@ -32,12 +28,7 @@ for (const key of ['DISCORD_TOKEN', 'DISCORD_APPLICATION_ID']) {
 }
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-  partials: [Partials.Channel, Partials.Message],
+  intents: [GatewayIntentBits.Guilds],
 });
 
 const robloxIntegration = createRobloxIntegration({ client, guildId: GUILD_ID });
@@ -52,77 +43,28 @@ async function registerCommands() {
   ]);
 }
 
-function transcriptFor(message) {
-  const attachments = [...message.attachments.values()]
-    .map((attachment) => `${attachment.name ?? 'Pièce jointe'}: ${attachment.url}`);
-  const stickers = [...message.stickers.values()]
-    .map((sticker) => sticker.name);
-  const parts = [message.content || '(sans texte)'];
-
-  if (attachments.length) parts.push(`Pièces jointes:\n${attachments.join('\n')}`);
-  if (stickers.length) parts.push(`Stickers: ${stickers.join(', ')}`);
-  return parts.join('\n\n');
-}
-
-// Wraps text in a fenced code block, truncating so a single embed field
-// (1024 char limit) never overflows even with long messages/attachments.
-function codeBlock(text, maxLength = 950) {
-  const safeText = text && text.length > 0 ? text : '(sans texte)';
-  const truncated = safeText.length > maxLength
-    ? `${safeText.slice(0, maxLength)}\n… (tronqué)`
-    : safeText;
-  return `\`\`\`\n${truncated}\n\`\`\``;
-}
-
-async function sendTranscriptLog(kind, message, previousContent) {
-  if (!message.inGuild() || message.guildId !== GUILD_ID || message.channelId === LOG_CHANNEL_ID || message.author?.bot) return;
-
-  const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
-  if (!logChannel?.isTextBased() || !logChannel.isSendable()) {
-    throw new Error(`The log channel ${LOG_CHANNEL_ID} is unavailable or the bot cannot send messages there.`);
-  }
-
-  const author = message.author;
-  const timestamp = Math.floor(message.createdTimestamp / 1000);
-  const content = transcriptFor(message);
-
-  const embed = new EmbedBuilder()
-    .setColor(0x5865F2)
-    .setAuthor({
-      name: author?.tag ?? 'Inconnu',
-      iconURL: author?.displayAvatarURL?.(),
-    })
-    .setTitle(kind)
-    .setDescription(`[Aller au message](${message.url})`)
-    .setFooter({ text: 'French Squadron Utilities' })
-    .setTimestamp(message.createdTimestamp);
-
-  const metadataFields = [
-    { name: 'Auteur', value: `${author?.tag ?? 'Inconnu'} (${author?.id ?? '—'})`, inline: true },
-    { name: 'Salon source', value: `<#${message.channelId}>`, inline: true },
-    { name: 'Message ID', value: message.id ?? '—', inline: true },
-    { name: 'Date', value: `<t:${timestamp}:F>`, inline: true },
-  ];
-
-  if (previousContent !== undefined) {
-    embed.addFields(...metadataFields);
-    embed.addFields(
-      { name: 'Avant', value: codeBlock(previousContent), inline: false },
-      { name: 'Après', value: codeBlock(content), inline: false },
-    );
-  } else {
-    embed.addFields(...metadataFields);
-    embed.addFields({ name: 'Contenu', value: codeBlock(content), inline: false });
-  }
-
-  await logChannel.send({ embeds: [embed], allowedMentions: { parse: [] } });
-}
-
 async function handleInteraction(interaction) {
   if (interaction.isChatInputCommand() && interaction.commandName === 'ping') {
-    const sentAt = Date.now();
-    await interaction.reply({ content: 'Pong...', ephemeral: true });
-    await interaction.editReply(`Pong ! Temps de réponse: ${Date.now() - sentAt} ms`);
+    const start = Date.now();
+    await interaction.deferReply({ ephemeral: true });
+    const roundTrip = Date.now() - start;
+    const wsPing = client.ws.ping >= 0 ? `${client.ws.ping}ms` : '—';
+
+    let robloxPing = '—';
+    try {
+      const robloxStart = Date.now();
+      await fetch('https://users.roblox.com/v1/usernames/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ usernames: ['Roblox'], excludeBannedUsers: false }),
+        signal: AbortSignal.timeout(2500),
+      });
+      robloxPing = `${Date.now() - robloxStart}ms`;
+    } catch {
+      robloxPing = 'Hors ligne';
+    }
+
+    await interaction.editReply(`🏓Pong ! | Temps de réponse : ${roundTrip}ms | API : Discord ${wsPing}, Roblox ${robloxPing}`);
     return;
   }
 }
@@ -145,18 +87,21 @@ client.on(Events.InteractionCreate, (interaction) => {
   })().catch((error) => console.error('Unable to handle interaction:', error));
 });
 
-client.on(Events.MessageCreate, (message) => {
-  void sendTranscriptLog('Message envoyé', message).catch((error) => console.error('Unable to log a message:', error));
-});
-
-client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
-  void (async () => {
-    const resolvedMessage = newMessage.partial ? await newMessage.fetch() : newMessage;
-    await sendTranscriptLog('Message modifié', resolvedMessage, oldMessage.partial ? undefined : oldMessage.content);
-  })().catch((error) => console.error('Unable to log a message update:', error));
-});
-
 client.on(Events.Error, (error) => console.error('Discord client error:', error));
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
+
+async function shutdown(signal) {
+  console.log(`[Bot] ${signal} received. Stopping services...`);
+  try {
+    await robloxIntegration.stopHttpServer();
+  } catch (error) {
+    console.error('[Roblox] Error closing HTTP server:', error.message);
+  }
+  client.destroy();
+  process.exit(0);
+}
+
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
 await client.login(process.env.DISCORD_TOKEN);

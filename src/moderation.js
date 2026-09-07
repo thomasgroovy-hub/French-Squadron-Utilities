@@ -13,10 +13,8 @@ const MODERATION_ROLE_ID = '1487266203864006707';
 const UNLINK_ROLE_ID = '1487276505712033883';
 const STRIKE_TABLE = 'strikes';
 const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
-const EMBED_SEPARATOR = '════════════════════════════════════════';
-const STRIKE_COLOR = 0xD99A2B;
-const TIMEOUT_COLOR = 0x607D8B;
-const BAN_COLOR = 0xB34747;
+const EMBED_SEPARATOR = '────────────────────────────────────────';
+const EMBED_COLOR = 0x2B2D31;
 
 export const moderationCommands = [
   new SlashCommandBuilder()
@@ -76,18 +74,22 @@ function logField(name, value, inline = false) {
   return { name, value: String(value).slice(0, 1024) || '—', inline };
 }
 
-function actionEmbed(title, color, action = '', moderator = '—', reason = '—', extraText = '') {
+function formatTitle(title) {
+  return title.startsWith('◆ ') ? title : `◆ ${title}`;
+}
+
+function actionEmbed(title, color = EMBED_COLOR, action = '', moderator = '—', reason = '—', extraText = '') {
   const description = [
     action,
-    `**Modérateur :** ${moderator}`,
-    EMBED_SEPARATOR,
-    `**Raison :** ${reason}`,
+    moderator && moderator !== '—' ? `**Modérateur :** ${moderator}` : '',
+    action || (moderator && moderator !== '—') ? EMBED_SEPARATOR : '',
+    reason && reason !== '—' ? `**Raison :** ${reason}` : '',
     extraText,
   ].filter(Boolean).join('\n');
 
   return new EmbedBuilder()
-    .setColor(color)
-    .setTitle(title)
+    .setColor(EMBED_COLOR)
+    .setTitle(formatTitle(title))
     .setDescription(description)
     .setFooter({ text: 'FPCS Utilities' })
     .setTimestamp();
@@ -125,8 +127,7 @@ export function createModerationIntegration({ client }) {
   async function hasModerationAccess(interaction) {
     const guild = client.guilds.cache.get(MODERATION_GUILD_ID);
     const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
-    const role = guild?.roles.cache.get(MODERATION_ROLE_ID);
-    return Boolean(role && member?.roles.highest && member.roles.highest.position >= role.position);
+    return Boolean(member?.roles.cache.has(MODERATION_ROLE_ID));
   }
 
   async function initializeDatabase() {
@@ -325,9 +326,9 @@ export function createModerationIntegration({ client }) {
       }
     }
     await safeEditReply(interaction, {
-      embeds: [actionEmbed('Timeout retiré', 0x27AE60, `Le timeout de ${target} a été retiré partout où cela était possible.`, moderatorLabel(interaction), reason, `**Résultat :** ${succeeded} réussi(s), ${failed} échec(s)`)],
+      embeds: [actionEmbed('Timeout retiré', EMBED_COLOR, `Le timeout de ${target} a été retiré partout où cela était possible.`, moderatorLabel(interaction), reason)],
     });
-    await sendLog('Timeout retiré', 0x27AE60, `${target} n’est plus mute.`, [
+    await sendLog('Timeout retiré', EMBED_COLOR, `${target} n’est plus en timeout.`, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
@@ -352,9 +353,9 @@ export function createModerationIntegration({ client }) {
       }
     }
     await safeEditReply(interaction, {
-      embeds: [actionEmbed('Bannissement retiré', 0x27AE60, `Le bannissement de ${target} a été retiré partout où cela était possible.`, moderatorLabel(interaction), reason, `**Résultat :** ${succeeded} réussi(s), ${failed} échec(s)`)],
+      embeds: [actionEmbed('Bannissement retiré', EMBED_COLOR, `Le bannissement de ${target} a été retiré partout où cela était possible.`, moderatorLabel(interaction), reason)],
     });
-    await sendLog('Bannissement retiré', 0x27AE60, `${target} n’est plus banni.`, [
+    await sendLog('Bannissement retiré', EMBED_COLOR, `${target} n’est plus banni.`, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
@@ -371,9 +372,9 @@ export function createModerationIntegration({ client }) {
     try {
       const [result] = await pool.execute(`DELETE FROM ${STRIKE_TABLE} WHERE discord_id = ?`, [target.id]);
       await safeEditReply(interaction, {
-        embeds: [actionEmbed('Strikes supprimés', 0x27AE60, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, moderatorLabel(interaction), reason, `**Nombre supprimé :** ${result.affectedRows}`)],
+        embeds: [actionEmbed('Strikes supprimés', EMBED_COLOR, `Les strikes de ${target} ont été supprimés (${result.affectedRows} supprimé(s)).`, moderatorLabel(interaction), reason)],
       });
-      await sendLog('Strikes supprimés', 0x27AE60, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, [
+      await sendLog('Strikes supprimés', EMBED_COLOR, `${result.affectedRows} strike(s) supprimé(s) pour ${target}.`, [
         logField('Cible', `${target} (${target.id})`),
         logField('Modérateur', `${interaction.user} (${interaction.user.id})`),
         logField('Raison', reason),
@@ -382,14 +383,17 @@ export function createModerationIntegration({ client }) {
     } catch (error) {
       console.error('[Moderation] Unable to remove strikes:', error.message);
       await safeEditReply(interaction, {
-        embeds: [actionEmbed('Échec de suppression', 0xE74C3C, 'Impossible de supprimer les strikes.')],
+        embeds: [actionEmbed('Échec de suppression', EMBED_COLOR, 'Impossible de supprimer les strikes.')],
       });
     }
   }
 
-  async function handleStrikesView(interaction) {
-    const discordField = interaction.message.embeds[0]?.fields?.find((field) => field.name === 'Discord')?.value;
-    const targetId = discordField?.match(/<@!?([0-9]+)>/)?.[1];
+  async function handleStrikesView(interaction, explicitTargetId = null) {
+    let targetId = explicitTargetId;
+    if (!targetId) {
+      const discordField = interaction.message.embeds[0]?.fields?.find((field) => field.name === 'Discord')?.value;
+      targetId = discordField?.match(/<@!?([0-9]+)>/)?.[1];
+    }
     if (!targetId || !(await initializeDatabase())) {
       await interaction.reply({ content: 'Impossible de récupérer les strikes.', ephemeral: true });
       return;
@@ -407,12 +411,13 @@ export function createModerationIntegration({ client }) {
     const description = strikes.map((strike, index) => {
       const timestamp = Math.floor(new Date(strike.created_at_utc).getTime() / 1000);
       return `**${index + 1}. <t:${timestamp}:F>**\nRaison : ${strike.raison}\nModérateur : <@${strike.moderator_discord_id}>`;
-    }).join('\n\n');
+    }).join(`\n\n${EMBED_SEPARATOR}\n\n`);
+
     await interaction.reply({
       embeds: [new EmbedBuilder()
-        .setColor(STRIKE_COLOR)
-        .setTitle('Strikes enregistrés')
-        .setDescription(description.replace(/\n\n(?=\*\*\d+\.)/g, `\n\n${EMBED_SEPARATOR}\n\n`))
+        .setColor(EMBED_COLOR)
+        .setTitle(formatTitle('Strikes enregistrés'))
+        .setDescription(description)
         .setFooter({ text: 'FPCS Utilities' })
         .setTimestamp()],
       ephemeral: true,
@@ -420,8 +425,9 @@ export function createModerationIntegration({ client }) {
   }
 
   async function handleInteraction(interaction) {
-    if (interaction.isButton() && interaction.customId === 'strikes_view') {
-      await handleStrikesView(interaction);
+    if (interaction.isButton() && interaction.customId.startsWith('strikes_view')) {
+      const targetId = interaction.customId.includes(':') ? interaction.customId.split(':')[1] : null;
+      await handleStrikesView(interaction, targetId);
       return true;
     }
     if (!interaction.isChatInputCommand()) return false;

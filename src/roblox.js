@@ -168,7 +168,22 @@ async function fetchRobloxJson(url, options = {}) {
   }
 }
 
+const robloxUserCache = new Map();
+const robloxProfileCache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const EMBED_COLOR = 0x2B2D31;
+const EMBED_SEPARATOR = '────────────────────────────────────────';
+
+function formatTitle(title) {
+  return title.startsWith('◆ ') ? title : `◆ ${title}`;
+}
+
 async function findRobloxUser(username) {
+  const cacheKey = username.toLowerCase();
+  const cached = robloxUserCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.data;
+  }
   const body = JSON.stringify({
     usernames: [username],
     excludeBannedUsers: false,
@@ -184,22 +199,30 @@ async function findRobloxUser(username) {
     throw new RobloxApiError('notFound', 'This Roblox username was not found.');
   }
 
-  return { id: user.id, username: user.name };
+  const result = { id: user.id, username: user.name };
+  robloxUserCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
+  return result;
 }
 
 async function getRobloxProfile(robloxUserId) {
+  const cached = robloxProfileCache.get(robloxUserId);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.data;
+  }
   const user = await fetchRobloxJson(`${ROBLOX_USER_URL}${robloxUserId}`);
   if (!user?.id || !user?.name) {
     throw new RobloxApiError('notFound', 'This Roblox account no longer exists.');
   }
 
-  return {
+  const result = {
     id: user.id,
     username: user.name,
     displayName: user.displayName || user.name,
     description: user.description || '',
     created: user.created || null,
   };
+  robloxProfileCache.set(robloxUserId, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
+  return result;
 }
 
 async function getRobloxAvatarUrl(robloxUserId) {
@@ -220,12 +243,12 @@ function robloxErrorMessage(error) {
 
 function deathDmEmbed(payload) {
   return new EmbedBuilder()
-    .setColor(0xED4245)
-    .setTitle('NOTIFICATION DE MORT')
+    .setColor(EMBED_COLOR)
+    .setTitle(formatTitle('NOTIFICATION DE MORT'))
     .setDescription(
-      `Tu es mort durant une session roleplay, **ton personnage (${payload.robloxUsername}) est donc désormais mort de manière roleplay**. Si tu trouves cette mort injuste, ouvre un **ticket** afin de la contester.\n\nL’équipe lore de Site-66.`,
+      `Tu es mort durant une session roleplay.\n\n${EMBED_SEPARATOR}\n\n**Personnage :** ${payload.robloxUsername}\nTon personnage est désormais mort de manière roleplay. Si tu trouves cette mort injuste, ouvre un **ticket** afin de la contester.\n\n*L’équipe lore de Site-66.*`,
     )
-    .setFooter({ text: 'FPCSBot' })
+    .setFooter({ text: 'FPCS Utilities' })
     .setTimestamp(new Date(payload.occurredAt * 1000));
 }
 
@@ -388,16 +411,15 @@ export function createRobloxIntegration({ client, guildId }) {
   async function handleVerificationPanel(interaction) {
     const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
     const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
-    const requiredRole = permissionGuild?.roles.cache.get(VERIFICATION_PANEL_ROLE_ID);
-    if (!requiredRole || !permissionMember?.roles.highest || permissionMember.roles.highest.position < requiredRole.position) {
+    if (!permissionMember?.roles.cache.has(VERIFICATION_PANEL_ROLE_ID)) {
       await interaction.reply({ content: 'Tu n’as pas le rôle nécessaire pour poster le panneau de vérification.', ephemeral: true });
       return;
     }
 
     const embed = new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle('Vérifie ton Roblox')
-      .setDescription('Le bot te demandera d’inscrire ton utilisateur Roblox et de mettre un code dans ta bio Roblox. Clique sur « Vérifier mon code » après afin de vérifier la manipulation.');
+      .setColor(EMBED_COLOR)
+      .setTitle(formatTitle('Vérifie ton Roblox'))
+      .setDescription(`Le bot te demandera d’inscrire ton utilisateur Roblox et de mettre un code dans ta bio Roblox.\n\n${EMBED_SEPARATOR}\n\nClique sur « **Se vérifier** » ci-dessous pour démarrer.`);
     const button = new ButtonBuilder()
       .setCustomId('verify_panel_start')
       .setLabel('Se vérifier')
@@ -466,10 +488,10 @@ export function createRobloxIntegration({ client, guildId }) {
         .setLabel('Vérifier mon code')
         .setStyle(ButtonStyle.Success);
       const verificationEmbed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('Code de vérification Roblox')
+        .setColor(EMBED_COLOR)
+        .setTitle(formatTitle('Code de vérification Roblox'))
         .setDescription(
-          `Place ce code dans la section **About / Bio** de ton profil Roblox :\n\n\`\`\`\n${verificationCode}\n\`\`\`\n\nTu as 15 minutes pour le placer, puis clique sur **Vérifier mon code**. Tu pourras retirer le code de ta bio après la vérification.`,
+          `Place ce code dans la section **About / Bio** de ton profil Roblox :\n\n\`\`\`\n${verificationCode}\n\`\`\`\n\n${EMBED_SEPARATOR}\n\nTu as **15 minutes** pour le placer, puis clique sur **Vérifier mon code**. Tu pourras retirer le code de ta bio après la vérification.`,
         )
         .setFooter({ text: 'FPCS Utilities' })
         .setTimestamp();
@@ -595,8 +617,7 @@ export function createRobloxIntegration({ client, guildId }) {
   async function handleUnlink(interaction) {
     const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
     const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
-    const requiredRole = permissionGuild?.roles.cache.get(UNLINK_ROLE_ID);
-    if (!requiredRole || !permissionMember?.roles.highest || permissionMember.roles.highest.position < requiredRole.position) {
+    if (!permissionMember?.roles.cache.has(UNLINK_ROLE_ID)) {
       await interaction.reply({ content: 'Tu n’as pas le niveau de rôle nécessaire pour utiliser cette commande.', ephemeral: true });
       return;
     }
@@ -611,7 +632,7 @@ export function createRobloxIntegration({ client, guildId }) {
       );
       const link = links[0];
       if (!link) {
-        await interaction.editReply('Aucun compte Roblox n’est actuellement lié à ton compte Discord.');
+        await interaction.editReply(`Aucun compte Roblox n’est actuellement lié au compte Discord de ${target}.`);
         return;
       }
 
@@ -729,20 +750,20 @@ export function createRobloxIntegration({ client, guildId }) {
         avatarUrl = resolvedDiscordUser?.displayAvatarURL({ extension: 'png', size: 256 }) ?? null;
       }
       const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('Liaison vérifiée')
-        .addFields(
-          { name: 'Discord', value: resolvedDiscordUser ? `${resolvedDiscordUser} (${resolvedDiscordUser.tag})` : `<@${link.discord_user_id}>`, inline: true },
-          { name: 'Roblox', value: profile ? `**${profile.username}**${profile.displayName !== profile.username ? ` (${profile.displayName})` : ''}` : `**${link.roblox_username}**`, inline: true },
-          { name: 'Tag de vérification', value: `#${link.verification_rank}`, inline: true },
-          { name: 'Strikes actifs', value: String(strikeCount), inline: true },
-          { name: 'Âge du compte Discord', value: discordCreated ? `<t:${Math.floor(resolvedDiscordUser.createdTimestamp / 1000)}:D> (${discordCreated})` : 'Information indisponible', inline: false },
-          { name: 'Âge du compte Roblox', value: robloxAge ? `<t:${Math.floor(new Date(profile.created).getTime() / 1000)}:D> (${robloxAge})` : `Information indisponible${robloxError ? ` : ${robloxError}` : '.'}`, inline: false },
-        )
-        .setFooter({ text: 'French Squadron Utilities' });
+        .setColor(EMBED_COLOR)
+        .setTitle(formatTitle('Liaison vérifiée'))
+        .setDescription([
+          `**Discord :** ${resolvedDiscordUser ? `${resolvedDiscordUser} (\`${resolvedDiscordUser.id}\`)` : `<@${link.discord_user_id}>`}`,
+          `**Roblox :** ${profile ? `**${profile.username}**${profile.displayName !== profile.username ? ` (${profile.displayName})` : ''}` : `**${link.roblox_username}**`}`,
+          `**Tag de vérification :** \`#${link.verification_rank}\` | **Strikes actifs :** \`${strikeCount}\``,
+          EMBED_SEPARATOR,
+          `**Âge Discord :** ${discordCreated ? `<t:${Math.floor(resolvedDiscordUser.createdTimestamp / 1000)}:D> (${discordCreated})` : 'Information indisponible'}`,
+          `**Âge Roblox :** ${robloxAge ? `<t:${Math.floor(new Date(profile.created).getTime() / 1000)}:D> (${robloxAge})` : `Information indisponible${robloxError ? ` : ${robloxError}` : '.'}`}`,
+        ].join('\n'))
+        .setFooter({ text: 'FPCS Utilities' });
       if (avatarUrl) embed.setThumbnail(avatarUrl);
       const strikesButton = new ButtonBuilder()
-        .setCustomId('strikes_view')
+        .setCustomId(`strikes_view:${link.discord_user_id}`)
         .setLabel('Voir les strikes')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(strikeCount === 0);
@@ -877,9 +898,18 @@ export function createRobloxIntegration({ client, guildId }) {
         if (quickTunnel === tunnel) quickTunnel = null;
         if (!publicUrlAnnounced) {
           console.error(`[Roblox] Cloudflare Quick Tunnel exited before it was ready (code=${code}, signal=${signal ?? 'none'}).`);
-          return;
+        } else {
+          console.error(`[Roblox] Cloudflare Quick Tunnel stopped (code=${code}, signal=${signal ?? 'none'}). The webhook is no longer public.`);
         }
-        console.error(`[Roblox] Cloudflare Quick Tunnel stopped (code=${code}, signal=${signal ?? 'none'}). The webhook is no longer public.`);
+        if (httpServer) {
+          console.log('[Roblox] Scheduling Cloudflare Quick Tunnel reconnection in 5 seconds...');
+          setTimeout(() => {
+            if (!quickTunnel && httpServer) {
+              console.log('[Roblox] Attempting Cloudflare Quick Tunnel reconnection...');
+              startQuickTunnel(port);
+            }
+          }, 5000).unref();
+        }
       });
     } catch (error) {
       console.error('[Roblox] Cloudflare Quick Tunnel could not start:', error.message);
