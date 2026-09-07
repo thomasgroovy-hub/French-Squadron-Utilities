@@ -424,7 +424,7 @@ export function createModerationIntegration({ client }) {
       await handleStrikesView(interaction);
       return true;
     }
-    if (!interaction.isChatInputCommand() || interaction.guildId !== MODERATION_GUILD_ID) return false;
+    if (!interaction.isChatInputCommand()) return false;
     if (interaction.commandName === 'strikes') await handleStrike(interaction);
     else if (interaction.commandName === 'timeout') await handleTimeout(interaction);
     else if (interaction.commandName === 'globalban') await handleGlobalBan(interaction);

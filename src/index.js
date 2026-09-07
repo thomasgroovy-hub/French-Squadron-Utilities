@@ -119,8 +119,6 @@ async function sendTranscriptLog(kind, message, previousContent) {
 }
 
 async function handleInteraction(interaction) {
-  if (interaction.guildId !== GUILD_ID) return;
-
   if (interaction.isChatInputCommand() && interaction.commandName === 'ping') {
     const sentAt = Date.now();
     await interaction.reply({ content: 'Pong...', ephemeral: true });
