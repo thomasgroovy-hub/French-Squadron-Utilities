@@ -5,13 +5,13 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  EmbedBuilder,
   ModalBuilder,
   SlashCommandBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from 'discord.js';
 import { Tunnel } from 'cloudflared';
+import { createV2Message, createV2EphemeralError } from './components.js';
 
 const ROBLOX_USERNAME_LOOKUP_URL = 'https://users.roblox.com/v1/usernames/users';
 const ROBLOX_USER_URL = 'https://users.roblox.com/v1/users/';
@@ -20,6 +20,12 @@ const VERIFICATION_GUILD_ID = '1487258655840669807';
 const COMMAND_GUILD_ID = '1454217001626243288';
 const VERIFICATION_PANEL_ROLE_ID = '1518410191933014057';
 const UNLINK_ROLE_ID = '1487276505712033883';
+const VERIFIED_ROLE_ID = '1534186084097851474';
+const COMPLETED_VERIFICATION_ROLE_ID = '1545975768104968272';
+const DEVELOPMENT_PING_ROLE_ID = '1545976696312696873';
+const LORE_PING_ROLE_ID = '1545976671369433218';
+const SESSION_PING_ROLE_ID = '1545976696312696873';
+const MODERATION_CASE_TABLE = 'moderation_cases';
 const VERIFICATION_LOG_CHANNEL_ID = '1546193398388494336';
 const VERIFICATION_CODE_LENGTH = 6;
 const VERIFICATION_EXPIRY_MINUTES = 15;
@@ -50,6 +56,9 @@ export const robloxCommands = [
       .setName('utilisateur')
       .setDescription('Utilisateur à délier')
       .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('panel-role')
+    .setDescription('Poste le panneau des rôles de notifications.'),
 ];
 
 class RobloxApiError extends Error {
@@ -172,10 +181,9 @@ const robloxUserCache = new Map();
 const robloxProfileCache = new Map();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const EMBED_COLOR = 0x2B2D31;
-const EMBED_SEPARATOR = '────────────────────────────────────────';
 
 function formatTitle(title) {
-  return title.startsWith('◆ ') ? title : `◆ ${title}`;
+  return title.replace(/^◆\s*/, '').trim();
 }
 
 async function findRobloxUser(username) {
@@ -241,15 +249,16 @@ function robloxErrorMessage(error) {
   return 'Une erreur inattendue est survenue pendant la vérification Roblox.';
 }
 
-function deathDmEmbed(payload) {
-  return new EmbedBuilder()
-    .setColor(EMBED_COLOR)
-    .setTitle(formatTitle('NOTIFICATION DE MORT'))
-    .setDescription(
-      `Tu es mort durant une session roleplay.\n\n${EMBED_SEPARATOR}\n\n**Personnage :** ${payload.robloxUsername}\nTon personnage est désormais mort de manière roleplay. Si tu trouves cette mort injuste, ouvre un **ticket** afin de la contester.\n\n*L’équipe lore de Site-66.*`,
-    )
-    .setFooter({ text: 'FPCS Utilities' })
-    .setTimestamp(new Date(payload.occurredAt * 1000));
+function deathDmMessage(payload) {
+  return createV2Message({
+    title: formatTitle('NOTIFICATION DE MORT'),
+    description: 'Tu es mort durant une session roleplay.',
+    sections: [
+      `**Personnage :** ${payload.robloxUsername}\nTon personnage est désormais mort de manière roleplay. Si tu trouves cette mort injuste, ouvre un **ticket** afin de la contester.`,
+      '*L’équipe lore de Site-66.*',
+    ],
+    accentColor: EMBED_COLOR,
+  });
 }
 
 export function createRobloxIntegration({ client, guildId }) {
@@ -324,6 +333,17 @@ export function createRobloxIntegration({ client, guildId }) {
             INDEX strikes_discord_id_idx (discord_id)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS ${MODERATION_CASE_TABLE} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            discord_id VARCHAR(20) NOT NULL,
+            type VARCHAR(32) NOT NULL,
+            moderator_discord_id VARCHAR(20) NOT NULL,
+            raison VARCHAR(1000) NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX moderation_cases_discord_id_idx (discord_id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
 
         databaseReady = true;
         console.log('[Roblox] MySQL tables are ready.');
@@ -344,7 +364,7 @@ export function createRobloxIntegration({ client, guildId }) {
     if (await initializeDatabase()) return true;
 
     if (interaction) {
-      await interaction.editReply('Le système de liaison Roblox est temporairement indisponible. Réessaie plus tard.');
+      await interaction.editReply(createV2EphemeralError('Le système de liaison Roblox est temporairement indisponible. Réessaie plus tard.', 'Vérification Roblox indisponible'));
     }
     return false;
   }
@@ -361,16 +381,14 @@ export function createRobloxIntegration({ client, guildId }) {
         throw new Error(`Verification log channel ${VERIFICATION_LOG_CHANNEL_ID} is unavailable.`);
       }
 
-      const embed = new EmbedBuilder()
-        .setColor(color)
-        .setTitle(title)
-        .setDescription(description)
-        .addFields(
-          { name: 'Discord', value: `${interaction.user} (${interaction.user.tag}, ${interaction.user.id})`, inline: false },
-          ...fields,
-        )
-        .setTimestamp();
-      await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+      const sections = [
+        `**Discord :** ${interaction.user} (${interaction.user.tag}, ${interaction.user.id})`,
+        ...fields.map((field) => `**${field.name} :** ${field.value}`),
+      ];
+      await channel.send({
+        ...createV2Message({ title, description, sections, accentColor: color }),
+        allowedMentions: { parse: [] },
+      });
     } catch (error) {
       console.error('[Roblox] Unable to send verification log:', error.message);
     }
@@ -404,7 +422,7 @@ export function createRobloxIntegration({ client, guildId }) {
 
   async function databaseAvailable(interaction) {
     if (await initializeDatabase()) return true;
-    await interaction.reply({ content: 'Le système de vérification Roblox est temporairement indisponible. Réessaie plus tard.', ephemeral: true });
+    await interaction.reply(createV2EphemeralError('Le système de vérification Roblox est temporairement indisponible. Réessaie plus tard.', 'Vérification Roblox indisponible'));
     return false;
   }
 
@@ -412,19 +430,21 @@ export function createRobloxIntegration({ client, guildId }) {
     const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
     const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
     if (!permissionMember?.roles.cache.has(VERIFICATION_PANEL_ROLE_ID)) {
-      await interaction.reply({ content: 'Tu n’as pas le rôle nécessaire pour poster le panneau de vérification.', ephemeral: true });
+      await interaction.reply(createV2EphemeralError('Tu n’as pas le rôle nécessaire pour poster le panneau de vérification.'));
       return;
     }
 
-    const embed = new EmbedBuilder()
-      .setColor(EMBED_COLOR)
-      .setTitle(formatTitle('Vérifie ton Roblox'))
-      .setDescription(`Le bot te demandera d’inscrire ton utilisateur Roblox et de mettre un code dans ta bio Roblox.\n\n${EMBED_SEPARATOR}\n\nClique sur « **Se vérifier** » ci-dessous pour démarrer.`);
     const button = new ButtonBuilder()
       .setCustomId('verify_panel_start')
       .setLabel('Se vérifier')
       .setStyle(ButtonStyle.Primary);
-    await interaction.reply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(button)] });
+    await interaction.reply(createV2Message({
+      title: formatTitle('Vérifie ton Roblox'),
+      description: 'Le bot te demandera d’inscrire ton utilisateur Roblox et de mettre un code dans ta bio Roblox.',
+      sections: ['Clique sur « **Se vérifier** » ci-dessous pour démarrer.'],
+      actionRow: new ActionRowBuilder().addComponents(button),
+      accentColor: EMBED_COLOR,
+    }));
   }
 
   async function handleVerificationStart(interaction) {
@@ -435,7 +455,7 @@ export function createRobloxIntegration({ client, guildId }) {
         [interaction.user.id],
       );
       if (links[0]) {
-        await interaction.reply({ content: `Tu es déjà vérifié avec le compte Roblox lié : **${links[0].roblox_username}**.`, ephemeral: true });
+        await interaction.reply(createV2EphemeralError(`Tu es déjà vérifié avec le compte Roblox lié : **${links[0].roblox_username}**.`, 'Vérification déjà effectuée'));
         return;
       }
 
@@ -452,7 +472,7 @@ export function createRobloxIntegration({ client, guildId }) {
       await interaction.showModal(modal);
     } catch (error) {
       markDatabaseUnavailable(error);
-      await interaction.reply({ content: 'Impossible de démarrer la vérification. Réessaie plus tard.', ephemeral: true }).catch(() => {});
+      await interaction.reply(createV2EphemeralError('Impossible de démarrer la vérification. Réessaie plus tard.', 'Vérification indisponible')).catch(() => {});
     }
   }
 
@@ -487,18 +507,13 @@ export function createRobloxIntegration({ client, guildId }) {
         .setCustomId('verify_panel_check')
         .setLabel('Vérifier mon code')
         .setStyle(ButtonStyle.Success);
-      const verificationEmbed = new EmbedBuilder()
-        .setColor(EMBED_COLOR)
-        .setTitle(formatTitle('Code de vérification Roblox'))
-        .setDescription(
-          `Place ce code dans la section **About / Bio** de ton profil Roblox :\n\n\`\`\`\n${verificationCode}\n\`\`\`\n\n${EMBED_SEPARATOR}\n\nTu as **15 minutes** pour le placer, puis clique sur **Vérifier mon code**. Tu pourras retirer le code de ta bio après la vérification.`,
-        )
-        .setFooter({ text: 'FPCS Utilities' })
-        .setTimestamp();
-      await interaction.editReply({
-        embeds: [verificationEmbed],
-        components: [new ActionRowBuilder().addComponents(button)],
-      });
+      await interaction.editReply(createV2Message({
+        title: formatTitle('Code de vérification Roblox'),
+        description: `Place ce code dans la section **About / Bio** de ton profil Roblox :\n\n\`\`\`\n${verificationCode}\n\`\`\``,
+        sections: ['Tu as **15 minutes** pour le placer, puis clique sur **Vérifier mon code**. Tu pourras retirer le code de ta bio après la vérification.'],
+        actionRow: new ActionRowBuilder().addComponents(button),
+        accentColor: EMBED_COLOR,
+      }));
       await sendVerificationLog({
         title: 'Demande de liaison initiée',
         color: 0x3498DB,
@@ -547,6 +562,110 @@ export function createRobloxIntegration({ client, guildId }) {
     }
   }
 
+  async function assignVerifiedRole(userId) {
+    try {
+      const guild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
+      if (!guild) return 'guild_not_found';
+      const [member, role, botMember] = await Promise.all([
+        guild.members.fetch(userId).catch(() => null),
+        guild.roles.fetch(VERIFIED_ROLE_ID),
+        guild.members.fetch(client.user.id),
+      ]);
+      if (!member) return 'user_not_found';
+      if (!role) return 'role_not_found';
+      if (member.roles.cache.has(role.id)) return 'already_assigned';
+      if (!botMember.permissions.has('ManageRoles') || role.position >= botMember.roles.highest.position) {
+        return 'role_not_manageable';
+      }
+      await member.roles.add(role);
+      return 'assigned';
+    } catch (error) {
+      console.error('[Roblox] Unable to assign verified role:', error.message);
+      return 'discord_error';
+    }
+  }
+
+  async function removeCompletedVerificationRole(userId) {
+    try {
+      const guild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
+      if (!guild) return 'guild_not_found';
+      const [member, role, botMember] = await Promise.all([
+        guild.members.fetch(userId).catch(() => null),
+        guild.roles.fetch(COMPLETED_VERIFICATION_ROLE_ID),
+        guild.members.fetch(client.user.id),
+      ]);
+      if (!member || !role || !member.roles.cache.has(role.id)) return 'not_assigned';
+      if (!botMember.permissions.has('ManageRoles') || role.position >= botMember.roles.highest.position) {
+        return 'role_not_manageable';
+      }
+      await member.roles.remove(role);
+      return 'removed';
+    } catch (error) {
+      console.error('[Roblox] Unable to remove completed verification role:', error.message);
+      return 'discord_error';
+    }
+  }
+
+  async function handleRolePanel(interaction) {
+    const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
+    const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
+    if (!permissionMember?.roles.cache.has(VERIFICATION_PANEL_ROLE_ID)) {
+      await interaction.reply(createV2EphemeralError('Tu n’as pas le rôle nécessaire pour poster ce panneau.'));
+      return;
+    }
+    const buttons = [
+      ['role_panel_development', 'Rôle pour les ping de développements'],
+      ['role_panel_lore', 'Rôle pour les ping lore'],
+      ['role_panel_sessions', 'Rôle pour les ping sessions'],
+    ].map(([customId, label]) => new ButtonBuilder()
+      .setCustomId(customId)
+      .setLabel(label)
+      .setStyle(ButtonStyle.Secondary));
+    await interaction.reply(createV2Message({
+      title: 'Rôles notifications',
+      description: 'Lorem ipsum',
+      actionRow: new ActionRowBuilder().addComponents(buttons),
+      footer: 'FPCS Utilities',
+      accentColor: EMBED_COLOR,
+    }));
+  }
+
+  async function handleRoleButton(interaction) {
+    const roleIds = {
+      role_panel_development: DEVELOPMENT_PING_ROLE_ID,
+      role_panel_lore: LORE_PING_ROLE_ID,
+      role_panel_sessions: SESSION_PING_ROLE_ID,
+    };
+    const roleId = roleIds[interaction.customId];
+    if (!roleId) return false;
+    try {
+      const guild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
+      const [member, role, botMember] = await Promise.all([
+        guild?.members.fetch(interaction.user.id).catch(() => null),
+        guild?.roles.fetch(roleId),
+        guild?.members.fetch(client.user.id),
+      ]);
+      if (!guild || !member || !role) {
+        await interaction.reply(createV2EphemeralError('Impossible de trouver ce rôle ou ton membre Discord.'));
+        return true;
+      }
+      if (!botMember.permissions.has('ManageRoles') || role.position >= botMember.roles.highest.position) {
+        await interaction.reply(createV2EphemeralError('Le bot ne peut pas gérer ce rôle. Vérifie ses permissions et sa hiérarchie.'));
+        return true;
+      }
+      if (member.roles.cache.has(role.id)) {
+        await interaction.reply(createV2Message({ title: 'Rôle déjà attribué', description: 'Tu possèdes déjà ce rôle.', footer: 'FPCS Utilities' }));
+        return true;
+      }
+      await member.roles.add(role);
+      await interaction.reply(createV2Message({ title: 'Rôle attribué', description: `Le rôle **${role.name}** t’a été attribué.`, footer: 'FPCS Utilities' }));
+    } catch (error) {
+      console.error('[Roblox] Unable to assign notification role:', error.message);
+      await interaction.reply(createV2EphemeralError('Impossible d’attribuer ce rôle.')).catch(() => {});
+    }
+    return true;
+  }
+
   async function handleVerificationCheck(interaction) {
     await interaction.deferReply({ ephemeral: true });
     if (!(await requireDatabase(interaction))) return;
@@ -591,9 +710,22 @@ export function createRobloxIntegration({ client, guildId }) {
         return;
       }
 
-      await interaction.editReply(
-        `Liaison réussie : **${profile.username}** est maintenant associé à ton compte Discord. Ton tag interne est **#${verificationRank}**. Tu peux retirer le code de ta bio Roblox.`,
-      );
+      const roleStatus = await assignVerifiedRole(interaction.user.id);
+      const temporaryRoleStatus = await removeCompletedVerificationRole(interaction.user.id);
+      if (roleStatus !== 'assigned' && roleStatus !== 'already_assigned') {
+        console.error(`[Roblox] Verified role assignment status for ${interaction.user.id}: ${roleStatus}`);
+      }
+      if (!['removed', 'not_assigned'].includes(temporaryRoleStatus)) {
+        console.error(`[Roblox] Temporary verification role removal status for ${interaction.user.id}: ${temporaryRoleStatus}`);
+      }
+      await interaction.editReply(createV2Message({
+        title: 'Vérification réussie',
+        description: `**${profile.username}** est maintenant associé à ton compte Discord. Ton tag interne est **#${verificationRank}**. Tu peux retirer le code de ta bio Roblox.`,
+        sections: roleStatus === 'assigned' || roleStatus === 'already_assigned'
+          ? ['Le rôle vérifié a été attribué à ton compte.']
+          : ['La liaison est enregistrée, mais le rôle vérifié n’a pas pu être attribué automatiquement. Un administrateur doit vérifier la hiérarchie et les permissions du bot.'],
+        accentColor: 0x2ECC71,
+      }));
       await sendVerificationLog({
         title: 'Vérification Roblox réussie',
         color: 0x2ECC71,
@@ -618,7 +750,7 @@ export function createRobloxIntegration({ client, guildId }) {
     const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
     const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
     if (!permissionMember?.roles.cache.has(UNLINK_ROLE_ID)) {
-      await interaction.reply({ content: 'Tu n’as pas le niveau de rôle nécessaire pour utiliser cette commande.', ephemeral: true });
+      await interaction.reply(createV2EphemeralError('Tu n’as pas le niveau de rôle nécessaire pour utiliser cette commande.'));
       return;
     }
     const target = interaction.options.getUser('utilisateur', true);
@@ -680,7 +812,7 @@ export function createRobloxIntegration({ client, guildId }) {
     const discordUser = interaction.options.getUser('discord');
     const requestedRoblox = interaction.options.getString('roblox')?.trim();
     if (!discordUser && !requestedRoblox) {
-      await interaction.reply({ content: 'Renseigne au moins l’un des champs `discord` ou `roblox`.', ephemeral: true });
+      await interaction.reply(createV2EphemeralError('Renseigne au moins l’un des champs `discord` ou `roblox`.', 'Recherche incomplète'));
       return;
     }
 
@@ -718,6 +850,11 @@ export function createRobloxIntegration({ client, guildId }) {
         [link.discord_user_id],
       );
       const strikeCount = Number(strikeRows[0]?.total ?? 0);
+      const [caseRows] = await pool.execute(
+        `SELECT COUNT(*) AS total FROM ${MODERATION_CASE_TABLE} WHERE discord_id = ?`,
+        [link.discord_user_id],
+      );
+      const caseCount = Number(caseRows[0]?.total ?? 0);
 
       let resolvedDiscordUser = discordUser;
       if (!resolvedDiscordUser) {
@@ -749,28 +886,26 @@ export function createRobloxIntegration({ client, guildId }) {
       } else {
         avatarUrl = resolvedDiscordUser?.displayAvatarURL({ extension: 'png', size: 256 }) ?? null;
       }
-      const embed = new EmbedBuilder()
-        .setColor(EMBED_COLOR)
-        .setTitle(formatTitle('Liaison vérifiée'))
-        .setDescription([
+      const caseFileButton = new ButtonBuilder()
+        .setCustomId(`moderation_casefile:${link.discord_user_id}`)
+        .setLabel('Voir le casier de modération')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(strikeCount + caseCount === 0);
+      await interaction.editReply(createV2Message({
+        title: formatTitle('Liaison vérifiée'),
+        description: [
           `**Discord :** ${resolvedDiscordUser ? `${resolvedDiscordUser} (\`${resolvedDiscordUser.id}\`)` : `<@${link.discord_user_id}>`}`,
           `**Roblox :** ${profile ? `**${profile.username}**${profile.displayName !== profile.username ? ` (${profile.displayName})` : ''}` : `**${link.roblox_username}**`}`,
-          `**Tag de vérification :** \`#${link.verification_rank}\` | **Strikes actifs :** \`${strikeCount}\``,
-          EMBED_SEPARATOR,
+          `**Tag de vérification :** \`#${link.verification_rank}\` | **Avertissements actifs :** \`${strikeCount}\``,
+        ].join('\n'),
+        sections: [
           `**Âge Discord :** ${discordCreated ? `<t:${Math.floor(resolvedDiscordUser.createdTimestamp / 1000)}:D> (${discordCreated})` : 'Information indisponible'}`,
           `**Âge Roblox :** ${robloxAge ? `<t:${Math.floor(new Date(profile.created).getTime() / 1000)}:D> (${robloxAge})` : `Information indisponible${robloxError ? ` : ${robloxError}` : '.'}`}`,
-        ].join('\n'))
-        .setFooter({ text: 'FPCS Utilities' });
-      if (avatarUrl) embed.setThumbnail(avatarUrl);
-      const strikesButton = new ButtonBuilder()
-        .setCustomId(`strikes_view:${link.discord_user_id}`)
-        .setLabel('Voir les strikes')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(strikeCount === 0);
-      await interaction.editReply({
-        embeds: [embed],
-        components: [new ActionRowBuilder().addComponents(strikesButton)],
-      });
+        ],
+        thumbnailUrl: avatarUrl,
+        actionRow: new ActionRowBuilder().addComponents(caseFileButton),
+        accentColor: EMBED_COLOR,
+      }));
     } catch (error) {
       markDatabaseUnavailable(error);
       await interaction.editReply('Impossible d’effectuer cette recherche pour le moment. Réessaie plus tard.');
@@ -792,8 +927,15 @@ export function createRobloxIntegration({ client, guildId }) {
         await handleUnlink(interaction);
         return true;
       }
+      if (interaction.commandName === 'panel-role') {
+        await handleRolePanel(interaction);
+        return true;
+      }
     }
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith('role_panel_')) {
+        return handleRoleButton(interaction);
+      }
       if (interaction.customId === 'verify_panel_start') {
         await handleVerificationStart(interaction);
         return true;
@@ -853,7 +995,7 @@ export function createRobloxIntegration({ client, guildId }) {
       try {
         const discordUser = await client.users.fetch(link.discord_user_id);
         await discordUser.send({
-          embeds: [deathDmEmbed(payload)],
+          ...deathDmMessage(payload),
           allowedMentions: { parse: [] },
         });
         console.log(`[Roblox] Sent permadeath DM for event ${payload.eventId} to Discord user ${link.discord_user_id}.`);

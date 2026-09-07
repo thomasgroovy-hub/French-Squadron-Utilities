@@ -9,6 +9,7 @@ import {
 } from 'discord.js';
 import { createModerationIntegration, moderationCommands } from './moderation.js';
 import { createRobloxIntegration, robloxCommands } from './roblox.js';
+import { createV2EphemeralError, createV2Message } from './components.js';
 
 const GUILD_ID = '1454217001626243288';
 const MODERATION_GUILD_ID = '1487258655840669807';
@@ -64,7 +65,11 @@ async function handleInteraction(interaction) {
       robloxPing = 'Hors ligne';
     }
 
-    await interaction.editReply(`🏓Pong ! | Temps de réponse : ${roundTrip}ms | API : Discord ${wsPing}, Roblox ${robloxPing}`);
+    await interaction.editReply(createV2Message({
+      title: 'Pong !',
+      description: `Temps de réponse : **${roundTrip}ms**`,
+      sections: [`**API Discord :** ${wsPing}\n**API Roblox :** ${robloxPing}`],
+    }));
     return;
   }
 }
@@ -84,7 +89,17 @@ client.on(Events.InteractionCreate, (interaction) => {
     if (await robloxIntegration.handleInteraction(interaction)) return;
     if (await moderationIntegration.handleInteraction(interaction)) return;
     await handleInteraction(interaction);
-  })().catch((error) => console.error('Unable to handle interaction:', error));
+  })().catch(async (error) => {
+    console.error('Unable to handle interaction:', error);
+    if (!interaction.isRepliable()) return;
+    const payload = createV2EphemeralError('Une erreur inattendue est survenue. Réessaie plus tard.', 'Erreur');
+    try {
+      if (interaction.deferred || interaction.replied) await interaction.editReply(payload);
+      else await interaction.reply(payload);
+    } catch (replyError) {
+      console.error('Unable to publish interaction error:', replyError.message);
+    }
+  });
 });
 
 client.on(Events.Error, (error) => console.error('Discord client error:', error));

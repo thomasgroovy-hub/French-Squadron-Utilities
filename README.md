@@ -11,6 +11,7 @@ Bot Discord Node.js utilisant `discord.js v14`, MySQL et une API Roblox.
 ### Vérification Roblox
 
 - `/verification-panel` : poste le panneau de vérification Roblox.
+- `/panel-role` : poste le panneau des rôles de notifications.
 - `/who-is discord:<membre>` : recherche une liaison à partir d'un membre Discord.
 - `/who-is roblox:<pseudo>` : recherche une liaison à partir d'un pseudo Roblox.
 - `/unlink utilisateur:<membre>` : supprime la liaison Roblox de la personne ciblée.
@@ -18,22 +19,26 @@ Bot Discord Node.js utilisant `discord.js v14`, MySQL et une API Roblox.
 Le bouton de vérification utilise des `customId` fixes et persistants. Les codes de vérification expirent après 15 minutes.
 Les appels vers l'API Roblox (recherche de pseudo et profils) disposent d'un cache en mémoire avec TTL de 5 minutes pour éviter tout rate-limit.
 
+Le panneau de notifications attribue les rôles développement `1545976696312696873`, lore `1545976671369433218` et sessions `1545976696312696873`. Après une vérification réussie, le rôle temporaire `1545975768104968272` est retiré et le rôle vérifié est attribué.
+
 Le rang interne est attribué automatiquement et n'est jamais réutilisé, même après un `/unlink`.
 
 ### Modération
 
-- `/strikes utilisateur:<membre> raison:<raison>` : enregistre un strike, envoie un DM et crée un log.
-- `/timeout utilisateur:<membre> raison:<raison> duree:<durée>` : applique le timeout choisi sur tous les serveurs où le bot est présent. Formats acceptés : `m` (minutes), `h` (heures) et `d` (jours), par exemple `1h`. Maximum : 28 jours.
-- `/globalban utilisateur:<membre> raison:<raison>` : envoie d'abord un DM puis bannit sur tous les serveurs où le bot est présent.
-- `/untimeout utilisateur:<membre> raison:<raison>` : retire le timeout sur tous les serveurs où le membre est présent.
-- `/unban utilisateur:<membre> raison:<raison>` : retire le bannissement sur tous les serveurs où le bot peut le faire.
-- `/removestrike utilisateur:<membre> raison:<raison>` : supprime tous les strikes enregistrés pour la personne ciblée.
+- `/avertissement utilisateur:<membre> raison:<raison>` : enregistre un avertissement, envoie un DM et crée un log.
+- `/exclusion utilisateur:<membre> raison:<raison> duree:<durée>` : applique une exclusion temporaire sur tous les serveurs où le bot est présent. Maximum : 28 jours.
+- `/bannissement-global utilisateur:<membre> raison:<raison>` : envoie d'abord un DM puis bannit sur tous les serveurs où le bot est présent.
+- `/fin-exclusion utilisateur:<membre> raison:<raison>` : retire l’exclusion temporaire d’un utilisateur.
+- `/fin-bannissement utilisateur:<membre> raison:<raison>` : retire le bannissement d’un utilisateur.
+- `/purgeavertissement utilisateur:<membre> raison:<raison>` : purger en totalité les avertissements d’une personne.
+- `/retireravertissement utilisateur:<membre> avertissement:<id>` : retire un avertissement précis affiché dans le casier de modération.
+- `/expulsion utilisateur:<membre> raison:<raison>` : expulse l’utilisateur de tous les serveurs où le bot est présent.
 
 Les confirmations des sanctions dans les salons sont sobres et épurées. Les détails techniques du traitement multi-serveurs restent réservés au salon de logs staff.
 
-### Présentation des Embeds
+### Présentation des messages
 
-Tous les embeds adoptent une esthétique sombre et épurée (thème Discord `#2B2D31`), avec un séparateur fin `────────────────────────────────────────`, un titre préfixé par `◆` et le footer uniforme `FPCS Utilities` avec timestamp natif.
+Les messages structurés utilisent les Discord Components V2 (`ContainerBuilder`, `TextDisplayBuilder`, `SectionBuilder` et `SeparatorBuilder`) avec un accent sombre cohérent. Les séparations sont natives Discord et les titres n’utilisent plus de préfixe décoratif.
 
 ## Permissions
 
@@ -41,13 +46,15 @@ Les permissions sont vérifiées sur la guilde de modération `14872586558406698
 
 - Panel de vérification : rôle `1518410191933014057`.
 - `/unlink` : rôle `1487276505712033883`.
-- Modération (`/strikes`, `/timeout`, `/globalban`, `/untimeout`, `/unban`, `/removestrike`) : rôle `1487266203864006707`.
+- Modération (`/avertissement`, `/exclusion`, `/bannissement-global`, `/fin-exclusion`, `/fin-bannissement`, `/purgeavertissement`, `/retireravertissement`, `/expulsion`) : rôle `1487266203864006707`.
 
 Les commandes sont exécutables indifféremment depuis les guildes `1454217001626243288` et `1487258655840669807`.
 
 ## Logs & Événements Roblox
 
 Les logs de vérification, unlink et modération sont envoyés dans le salon `1546193398388494336` de la guilde `1487258655840669807`.
+
+Les bannissements enregistrent les noms exacts des serveurs concernés dans `moderation_bans`. Lors d’un débannissement, ces noms sont envoyés en message privé puis les entrées sont supprimées.
 
 Les événements de mort définitive (permadeath) en jeu utilisent la route :
 
@@ -76,5 +83,5 @@ npm install
 npm start
 ```
 
-Le bot initialise automatiquement les tables MySQL `roblox_discord_links`, `roblox_pending_links`, `roblox_processed_death_events` et `strikes`.
+Le bot initialise automatiquement les tables MySQL `roblox_discord_links`, `roblox_pending_links`, `roblox_processed_death_events`, `strikes` et `moderation_cases`.
 Il supporte également l'arrêt gracieux (*graceful shutdown*) sur signaux `SIGINT` et `SIGTERM`.
