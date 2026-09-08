@@ -134,13 +134,19 @@ export function createModerationIntegration({ client }) {
   let databaseInitialization;
 
   async function hasModerationAccess(interaction) {
-    return hasGuildPermission({
-      client,
-      guildId: MODERATION_GUILD_ID,
-      userId: interaction.user.id,
-      allowedRoleIds: [MODERATION_ROLE_ID, SUPER_ADMIN_ROLE_ID],
-      ignoreNativePermissions: true,
-    });
+    const guildIds = [...new Set([interaction.guildId, MODERATION_GUILD_ID].filter(Boolean))];
+    for (const guildId of guildIds) {
+      if (await hasGuildPermission({
+        client,
+        guildId,
+        userId: interaction.user.id,
+        allowedRoleIds: [MODERATION_ROLE_ID, SUPER_ADMIN_ROLE_ID],
+        ignoreNativePermissions: true,
+      })) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async function initializeDatabase() {
