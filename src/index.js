@@ -233,18 +233,29 @@ client.once(Events.ClientReady, (readyClient) => {
 
 client.on(Events.InteractionCreate, (interaction) => {
   void (async () => {
+    console.log('[Discord] Interaction received:', {
+      type: interaction.type,
+      commandName: interaction.isChatInputCommand() ? interaction.commandName : null,
+      customId: interaction.isButton() ? interaction.customId : null,
+      guildId: interaction.guildId,
+      user: interaction.user ? `${interaction.user.tag} (${interaction.user.id})` : null,
+    });
+
     if (
       await robloxIntegration.handleInteraction(interaction)
     ) {
+      console.log('[Discord] Interaction handled by Roblox integration.');
       return;
     }
 
     if (
       await moderationIntegration.handleInteraction(interaction)
     ) {
+      console.log('[Discord] Interaction handled by moderation integration.');
       return;
     }
 
+    console.log('[Discord] Interaction was not handled by a command integration.');
     await handleInteraction(interaction);
   })().catch(async (error) => {
     console.error(

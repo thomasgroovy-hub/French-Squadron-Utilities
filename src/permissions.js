@@ -28,16 +28,58 @@ export async function hasGuildPermission({
   includeAdmin = true,
   ignoreNativePermissions = false,
 }) {
+  console.log('[Permissions] Checking access:', {
+    guildId,
+    userId,
+    allowedRoleIds,
+    requiredPermission: requiredPermission?.toString() ?? null,
+    includeAdmin,
+    ignoreNativePermissions,
+  });
+
   const guild = client.guilds.cache.get(guildId);
-  if (!guild) return false;
+  if (!guild) {
+    console.warn(`[Permissions] Guild ${guildId} is not in the client cache.`);
+    return false;
+  }
 
   const member = await guild.members.fetch(userId).catch(() => null);
-  if (!member) return false;
+  if (!member) {
+    console.warn(`[Permissions] User ${userId} could not be fetched in guild ${guildId}.`);
+    return false;
+  }
 
-  if (includeAdmin && hasDiscordAdministrator(member)) return true;
-  if (hasAnyRole(member, allowedRoleIds)) return true;
-  if (ignoreNativePermissions) return false;
-  if (requiredPermission && member.permissions?.has(requiredPermission)) return true;
+  const roleCache = member.roles?.cache;
+  const memberRoleIds = roleCache && typeof roleCache.keys === 'function'
+    ? Array.from(roleCache.keys())
+    : [];
+  const matchingRoleIds = allowedRoleIds.filter((roleId) => hasRole(member, roleId));
+  const administrator = hasDiscordAdministrator(member);
+  console.log('[Permissions] Member data:', {
+    guildId,
+    userId,
+    memberRoleIds,
+    matchingRoleIds,
+    administrator,
+  });
 
+  if (includeAdmin && administrator) {
+    console.log(`[Permissions] Allowed user ${userId}: Administrator.`);
+    return true;
+  }
+  if (matchingRoleIds.length) {
+    console.log(`[Permissions] Allowed user ${userId}: matching role ${matchingRoleIds.join(', ')}.`);
+    return true;
+  }
+  if (ignoreNativePermissions) {
+    console.warn(`[Permissions] Denied user ${userId}: no matching allowed role.`);
+    return false;
+  }
+  if (requiredPermission && member.permissions?.has(requiredPermission)) {
+    console.log(`[Permissions] Allowed user ${userId}: native permission.`);
+    return true;
+  }
+
+  console.warn(`[Permissions] Denied user ${userId}: no matching permission.`);
   return false;
 }

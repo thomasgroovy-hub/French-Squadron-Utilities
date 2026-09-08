@@ -135,17 +135,27 @@ export function createModerationIntegration({ client }) {
 
   async function hasModerationAccess(interaction) {
     const guildIds = [...new Set([interaction.guildId, MODERATION_GUILD_ID].filter(Boolean))];
+    console.log('[Moderation] Permission check started:', {
+      commandName: interaction.commandName,
+      user: `${interaction.user.tag} (${interaction.user.id})`,
+      interactionGuildId: interaction.guildId,
+      guildsToCheck: guildIds,
+      allowedRoleIds: [MODERATION_ROLE_ID, SUPER_ADMIN_ROLE_ID],
+    });
     for (const guildId of guildIds) {
-      if (await hasGuildPermission({
+      const allowed = await hasGuildPermission({
         client,
         guildId,
         userId: interaction.user.id,
         allowedRoleIds: [MODERATION_ROLE_ID, SUPER_ADMIN_ROLE_ID],
         ignoreNativePermissions: true,
-      })) {
+      });
+      console.log(`[Moderation] Permission result for guild ${guildId}: ${allowed ? 'ALLOWED' : 'DENIED'}`);
+      if (allowed) {
         return true;
       }
     }
+    console.warn(`[Moderation] Permission denied for ${interaction.user.id}.`);
     return false;
   }
 
