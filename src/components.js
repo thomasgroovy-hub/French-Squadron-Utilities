@@ -22,6 +22,8 @@ export function createV2Message({
   footer = null,
   spacing = SeparatorSpacingSize.Small,
   accentColor = null,
+  // New optional flag – when true the message will be visible only to the user who invoked the command
+  ephemeral = false,
 } = {}) {
   const container = new ContainerBuilder();
 
@@ -73,7 +75,8 @@ export function createV2Message({
 
   return {
     components: [container],
-    flags: MessageFlags.IsComponentsV2,
+    // Combine the base flag with Ephemeral when requested
+    flags: MessageFlags.IsComponentsV2 | (ephemeral ? MessageFlags.Ephemeral : 0),
   };
 }
 

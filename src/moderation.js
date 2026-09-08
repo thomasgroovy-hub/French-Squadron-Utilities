@@ -3,14 +3,14 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  MessageFlags,
+  PermissionFlagsBits,
   SlashCommandBuilder,
 } from 'discord.js';
 import { createV2Message, createV2EphemeralError } from './components.js';
+import { MODERATION_ROLE_ID, SUPER_ADMIN_ROLE_ID, hasGuildPermission } from './permissions.js';
 
 const MODERATION_GUILD_ID = '1487258655840669807';
 const LOG_CHANNEL_ID = '1546193398388494336';
-const MODERATION_ROLE_ID = '1487266203864006707';
 const UNLINK_ROLE_ID = '1487276505712033883';
 const STRIKE_TABLE = 'strikes';
 const CASE_TABLE = 'moderation_cases';
@@ -21,11 +21,13 @@ export const moderationCommands = [
   new SlashCommandBuilder()
     .setName('avertissement')
     .setDescription('Attribue un avertissement à un utilisateur.')
+    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison de l’avertissement').setRequired(true).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('exclusion')
     .setDescription('Place un utilisateur en exclusion temporaire sur tous les serveurs.')
+    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison de l’exclusion').setRequired(true).setMaxLength(1000))
     .addStringOption((option) => option
@@ -36,26 +38,37 @@ export const moderationCommands = [
   new SlashCommandBuilder()
     .setName('bannissement-global')
     .setDescription('Bannit un utilisateur sur tous les serveurs.')
+    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du bannissement').setRequired(true).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('fin-exclusion')
     .setDescription('Retire l’exclusion temporaire d’un utilisateur sur tous les serveurs.')
+    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('fin-bannissement')
     .setDescription('Retire le bannissement d’un utilisateur sur tous les serveurs.')
+    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('purgeavertissement')
     .setDescription('Purger en totalité les avertissements d’une personne')
+    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
   new SlashCommandBuilder()
+    .setName('purgecasier')
+    .setDescription('Purge en totalité le casier de modération d’une personne.')
+    .setDefaultMemberPermissions(0)
+    .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
+    .addStringOption((option) => option.setName('raison').setDescription('Raison de la purge').setRequired(false).setMaxLength(1000)),
+  new SlashCommandBuilder()
     .setName('retireravertissement')
     .setDescription('Retire un avertissement précis d’une personne.')
+    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addIntegerOption((option) => option
       .setName('avertissement')
@@ -66,6 +79,7 @@ export const moderationCommands = [
   new SlashCommandBuilder()
     .setName('expulsion')
     .setDescription('Expulse un utilisateur de tous les serveurs où le bot est présent.')
+    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison de l’expulsion').setRequired(true).setMaxLength(1000)),
 ];
@@ -120,9 +134,13 @@ export function createModerationIntegration({ client }) {
   let databaseInitialization;
 
   async function hasModerationAccess(interaction) {
-    const guild = client.guilds.cache.get(MODERATION_GUILD_ID);
-    const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
-    return Boolean(member?.roles.cache.has(MODERATION_ROLE_ID));
+    return hasGuildPermission({
+      client,
+      guildId: MODERATION_GUILD_ID,
+      userId: interaction.user.id,
+      allowedRoleIds: [MODERATION_ROLE_ID, SUPER_ADMIN_ROLE_ID],
+      ignoreNativePermissions: true,
+    });
   }
 
   async function initializeDatabase() {
@@ -498,12 +516,19 @@ export function createModerationIntegration({ client }) {
       `SELECT guild_id, guild_name FROM ${BAN_TABLE} WHERE discord_id = ? ORDER BY banned_at ASC`,
       [target.id],
     );
+    console.info(`[Moderation] Stored bans for ${target.id}:`, storedBans.map(b => `${b.guild_name} (${b.guild_id})`).join(', '));
     let succeeded = 0;
     let failed = 0;
-    for (const guild of client.guilds.cache.values()) {
+    for (const ban of storedBans) {
+      const guild = client.guilds.cache.get(ban.guild_id);
+      if (!guild) {
+        console.warn(`[Moderation] Guild ${ban.guild_id} not cached, skipping unban for ${target.id}`);
+        continue;
+      }
       try {
         await guild.bans.remove(target.id, reason);
         succeeded += 1;
+        console.info(`[Moderation] Unbanned ${target.id} from ${guild.name} (${guild.id})`);
       } catch (error) {
         failed += 1;
         console.error(`[Moderation] Unban failed in ${guild.name} (${guild.id}):`, error.message);
@@ -562,6 +587,47 @@ export function createModerationIntegration({ client }) {
     }
   }
 
+  async function handlePurgeCaseFile(interaction) {
+    if (!(await ensureModerationAccess(interaction))) return;
+    await interaction.deferReply();
+    if (!(await ensureDatabase(interaction))) return;
+    const target = interaction.options.getUser('utilisateur', true);
+    const reason = interaction.options.getString('raison')?.trim() || 'Purge complète du casier de modération';
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [warningResult] = await connection.execute(`DELETE FROM ${STRIKE_TABLE} WHERE discord_id = ?`, [target.id]);
+      const [caseResult] = await connection.execute(`DELETE FROM ${CASE_TABLE} WHERE discord_id = ?`, [target.id]);
+      const [banResult] = await connection.execute(`DELETE FROM ${BAN_TABLE} WHERE discord_id = ?`, [target.id]);
+      await connection.commit();
+
+      const deletedCount = warningResult.affectedRows + caseResult.affectedRows + banResult.affectedRows;
+      await safeEditReply(interaction, createV2Message({
+        title: 'Casier de modération purgé',
+        description: `Le casier de modération de ${target} a été entièrement purgé.`,
+        sections: [
+          `**Éléments supprimés :** ${deletedCount}`,
+          `**Raison :** ${reason}`,
+        ],
+      }));
+      await sendLog('CASIER PURGÉ', `Le casier de modération de ${target} a été entièrement purgé.`, [
+        logField('Cible', `${target} (${target.id})`),
+        logField('Modérateur', moderatorLabel(interaction)),
+        logField('Raison', reason),
+        logField('Éléments supprimés', deletedCount, true),
+      ]);
+    } catch (error) {
+      await connection.rollback();
+      console.error('[Moderation] Unable to purge case file:', error.message);
+      await safeEditReply(interaction, createV2Message({
+        title: 'Échec de la purge',
+        description: 'Impossible de purger entièrement le casier de modération.',
+      }));
+    } finally {
+      connection.release();
+    }
+  }
+
   async function handleCaseFileView(interaction, explicitTargetId = null) {
     let targetId = explicitTargetId;
     if (!targetId) {
@@ -589,8 +655,8 @@ export function createModerationIntegration({ client }) {
         ...createV2Message({
           title: 'Casier de modération',
           description: 'Aucun avertissement ni autre sanction enregistré pour cet utilisateur.',
+          ephemeral: true,
         }),
-        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
       });
       return;
     }
@@ -610,8 +676,8 @@ export function createModerationIntegration({ client }) {
         title: 'Casier de modération',
         description: sections[0],
         sections: sections.slice(1),
+        ephemeral: true,
       }),
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
     });
   }
 
@@ -628,6 +694,7 @@ export function createModerationIntegration({ client }) {
     else if (interaction.commandName === 'fin-exclusion') await handleUntimeout(interaction);
     else if (interaction.commandName === 'fin-bannissement') await handleUnban(interaction);
     else if (interaction.commandName === 'purgeavertissement') await handlePurgeWarnings(interaction);
+    else if (interaction.commandName === 'purgecasier') await handlePurgeCaseFile(interaction);
     else if (interaction.commandName === 'retireravertissement') await handleRemoveWarning(interaction);
     else if (interaction.commandName === 'expulsion') await handleExpulsion(interaction);
     else return false;

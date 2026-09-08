@@ -31,6 +31,7 @@ Le rang interne est attribué automatiquement et n'est jamais réutilisé, même
 - `/fin-exclusion utilisateur:<membre> raison:<raison>` : retire l’exclusion temporaire d’un utilisateur.
 - `/fin-bannissement utilisateur:<membre> raison:<raison>` : retire le bannissement d’un utilisateur.
 - `/purgeavertissement utilisateur:<membre> raison:<raison>` : purger en totalité les avertissements d’une personne.
+- `/purgecasier utilisateur:<membre> raison:<raison>` : purge entièrement le casier de modération enregistré d’une personne.
 - `/retireravertissement utilisateur:<membre> avertissement:<id>` : retire un avertissement précis affiché dans le casier de modération.
 - `/expulsion utilisateur:<membre> raison:<raison>` : expulse l’utilisateur de tous les serveurs où le bot est présent.
 
@@ -46,7 +47,7 @@ Les permissions sont vérifiées sur la guilde de modération `14872586558406698
 
 - Panel de vérification : rôle `1518410191933014057`.
 - `/unlink` : rôle `1487276505712033883`.
-- Modération (`/avertissement`, `/exclusion`, `/bannissement-global`, `/fin-exclusion`, `/fin-bannissement`, `/purgeavertissement`, `/retireravertissement`, `/expulsion`) : rôle `1487266203864006707`.
+- Modération (`/avertissement`, `/exclusion`, `/bannissement-global`, `/fin-exclusion`, `/fin-bannissement`, `/purgeavertissement`, `/purgecasier`, `/retireravertissement`, `/expulsion`) : rôle `1487266203864006707`.
 
 Les commandes sont exécutables indifféremment depuis les guildes `1454217001626243288` et `1487258655840669807`.
 

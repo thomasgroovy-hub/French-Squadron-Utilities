@@ -6,12 +6,14 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ModalBuilder,
+  PermissionFlagsBits,
   SlashCommandBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from 'discord.js';
 import { Tunnel } from 'cloudflared';
 import { createV2Message, createV2EphemeralError } from './components.js';
+import { SUPER_ADMIN_ROLE_ID, hasGuildPermission } from './permissions.js';
 
 const ROBLOX_USERNAME_LOOKUP_URL = 'https://users.roblox.com/v1/usernames/users';
 const ROBLOX_USER_URL = 'https://users.roblox.com/v1/users/';
@@ -36,10 +38,12 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const robloxCommands = [
   new SlashCommandBuilder()
     .setName('verification-panel')
-    .setDescription('Poste le panneau de vérification Roblox.'),
+    .setDescription('Poste le panneau de vérification Roblox.')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
     .setName('who-is')
     .setDescription('Recherche la liaison Discord ou Roblox d’une personne.')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
     .addUserOption((option) => option
       .setName('discord')
       .setDescription('Membre Discord à rechercher')
@@ -52,13 +56,15 @@ export const robloxCommands = [
   new SlashCommandBuilder()
     .setName('unlink')
     .setDescription('Détache le compte Roblox d’un utilisateur.')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
     .addUserOption((option) => option
       .setName('utilisateur')
       .setDescription('Utilisateur à délier')
       .setRequired(true)),
   new SlashCommandBuilder()
     .setName('panel-role')
-    .setDescription('Poste le panneau des rôles de notifications.'),
+    .setDescription('Poste le panneau des rôles de notifications.')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ];
 
 class RobloxApiError extends Error {
@@ -427,9 +433,15 @@ export function createRobloxIntegration({ client, guildId }) {
   }
 
   async function handleVerificationPanel(interaction) {
-    const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
-    const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
-    if (!permissionMember?.roles.cache.has(VERIFICATION_PANEL_ROLE_ID)) {
+    const authorized = await hasGuildPermission({
+      client,
+      guildId: VERIFICATION_GUILD_ID,
+      userId: interaction.user.id,
+      requiredPermission: PermissionFlagsBits.ManageGuild,
+      allowedRoleIds: [VERIFICATION_PANEL_ROLE_ID, SUPER_ADMIN_ROLE_ID],
+    });
+
+    if (!authorized) {
       await interaction.reply(createV2EphemeralError('Tu n’as pas le rôle nécessaire pour poster le panneau de vérification.'));
       return;
     }
@@ -607,9 +619,15 @@ export function createRobloxIntegration({ client, guildId }) {
   }
 
   async function handleRolePanel(interaction) {
-    const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
-    const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
-    if (!permissionMember?.roles.cache.has(VERIFICATION_PANEL_ROLE_ID)) {
+    const authorized = await hasGuildPermission({
+      client,
+      guildId: VERIFICATION_GUILD_ID,
+      userId: interaction.user.id,
+      requiredPermission: PermissionFlagsBits.ManageGuild,
+      allowedRoleIds: [VERIFICATION_PANEL_ROLE_ID, SUPER_ADMIN_ROLE_ID],
+    });
+
+    if (!authorized) {
       await interaction.reply(createV2EphemeralError('Tu n’as pas le rôle nécessaire pour poster ce panneau.'));
       return;
     }
@@ -654,11 +672,16 @@ export function createRobloxIntegration({ client, guildId }) {
         return true;
       }
       if (member.roles.cache.has(role.id)) {
-        await interaction.reply(createV2Message({ title: 'Rôle déjà attribué', description: 'Tu possèdes déjà ce rôle.', footer: 'FPCS Utilities' }));
+        await interaction.reply(createV2Message({ title: 'Rôle déjà attribué', description: 'Tu possèdes déjà ce rôle.', footer: 'FPCS Utilities', ephemeral: true }));
         return true;
       }
       await member.roles.add(role);
-      await interaction.reply(createV2Message({ title: 'Rôle attribué', description: `Le rôle **${role.name}** t’a été attribué.`, footer: 'FPCS Utilities' }));
+      await interaction.reply(createV2Message({
+        title: 'Rôle attribué',
+        description: `Le rôle **${role.name}** t’a été attribué.`,
+        footer: 'FPCS Utilities',
+        ephemeral: true,
+      }));
     } catch (error) {
       console.error('[Roblox] Unable to assign notification role:', error.message);
       await interaction.reply(createV2EphemeralError('Impossible d’attribuer ce rôle.')).catch(() => {});
@@ -747,9 +770,15 @@ export function createRobloxIntegration({ client, guildId }) {
   }
 
   async function handleUnlink(interaction) {
-    const permissionGuild = client.guilds.cache.get(VERIFICATION_GUILD_ID);
-    const permissionMember = permissionGuild ? await permissionGuild.members.fetch(interaction.user.id).catch(() => null) : null;
-    if (!permissionMember?.roles.cache.has(UNLINK_ROLE_ID)) {
+    const authorized = await hasGuildPermission({
+      client,
+      guildId: VERIFICATION_GUILD_ID,
+      userId: interaction.user.id,
+      requiredPermission: PermissionFlagsBits.ModerateMembers,
+      allowedRoleIds: [UNLINK_ROLE_ID, SUPER_ADMIN_ROLE_ID],
+    });
+
+    if (!authorized) {
       await interaction.reply(createV2EphemeralError('Tu n’as pas le niveau de rôle nécessaire pour utiliser cette commande.'));
       return;
     }
