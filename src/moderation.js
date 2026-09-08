@@ -21,13 +21,11 @@ export const moderationCommands = [
   new SlashCommandBuilder()
     .setName('avertissement')
     .setDescription('Attribue un avertissement à un utilisateur.')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison de l’avertissement').setRequired(true).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('exclusion')
     .setDescription('Place un utilisateur en exclusion temporaire sur tous les serveurs.')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison de l’exclusion').setRequired(true).setMaxLength(1000))
     .addStringOption((option) => option
@@ -38,37 +36,31 @@ export const moderationCommands = [
   new SlashCommandBuilder()
     .setName('bannissement-global')
     .setDescription('Bannit un utilisateur sur tous les serveurs.')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du bannissement').setRequired(true).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('fin-exclusion')
     .setDescription('Retire l’exclusion temporaire d’un utilisateur sur tous les serveurs.')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('fin-bannissement')
     .setDescription('Retire le bannissement d’un utilisateur sur tous les serveurs.')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('purgeavertissement')
     .setDescription('Purger en totalité les avertissements d’une personne')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison du retrait').setRequired(false).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('purgecasier')
     .setDescription('Purge en totalité le casier de modération d’une personne.')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison de la purge').setRequired(false).setMaxLength(1000)),
   new SlashCommandBuilder()
     .setName('retireravertissement')
     .setDescription('Retire un avertissement précis d’une personne.')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addIntegerOption((option) => option
       .setName('avertissement')
@@ -79,7 +71,6 @@ export const moderationCommands = [
   new SlashCommandBuilder()
     .setName('expulsion')
     .setDescription('Expulse un utilisateur de tous les serveurs où le bot est présent.')
-    .setDefaultMemberPermissions(0)
     .addUserOption((option) => option.setName('utilisateur').setDescription('Utilisateur ciblé').setRequired(true))
     .addStringOption((option) => option.setName('raison').setDescription('Raison de l’expulsion').setRequired(true).setMaxLength(1000)),
 ];
