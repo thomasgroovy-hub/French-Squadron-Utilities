@@ -122,6 +122,12 @@ function bearerTokenFrom(request) {
   return match?.[1]?.trim() || null;
 }
 
+function configuredEventSecret() {
+  const configuredSecret = process.env.ROBLOX_EVENT_SECRET || process.env.PERMADEATH_BOT_API_KEY;
+  if (!configuredSecret) return null;
+  return configuredSecret.trim().replace(/^Bearer\s+/i, '').trim() || null;
+}
+
 function tokensMatch(providedToken, expectedToken) {
   if (!providedToken || !expectedToken) return false;
 
@@ -979,7 +985,7 @@ export function createRobloxIntegration({ client, guildId }) {
   }
 
   app.post('/v1/roblox/permadeath-death', async (request, response) => {
-    if (!tokensMatch(bearerTokenFrom(request), process.env.ROBLOX_EVENT_SECRET)) {
+    if (!tokensMatch(bearerTokenFrom(request), configuredEventSecret())) {
       response.status(401).json({ error: 'Unauthorized.' });
       return;
     }
@@ -1040,8 +1046,8 @@ export function createRobloxIntegration({ client, guildId }) {
     if (httpServer) return httpServer;
 
     const port = portFromEnvironment();
-    if (!process.env.ROBLOX_EVENT_SECRET) {
-      console.error('[Roblox] ROBLOX_EVENT_SECRET is not configured. The death webhook will reject every request.');
+    if (!configuredEventSecret()) {
+      console.error('[Roblox] ROBLOX_EVENT_SECRET or PERMADEATH_BOT_API_KEY is not configured. The death webhook will reject every request.');
     }
 
     httpServer = app.listen(port, () => {

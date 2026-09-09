@@ -71,7 +71,7 @@ Il supporte également l'arrêt gracieux (*graceful shutdown*) sur signaux `SIGI
 ### Configuration Roblox
 
 1. Crée un secret Roblox Creator Hub nommé exactement comme `secretName` dans `PermadeathBotClient.Initiate`, par exemple `PERMADEATH_BOT_API_KEY`.
-2. Donne à `ROBLOX_EVENT_SECRET` la même valeur exacte côté bot. N’ajoute pas `Bearer` dans la valeur du secret : le module Roblox ajoute ce préfixe à l’en-tête HTTP.
+2. Donne à `ROBLOX_EVENT_SECRET` (ou `PERMADEATH_BOT_API_KEY`) la même valeur exacte côté bot. N’ajoute pas `Bearer` dans la valeur du secret : le module Roblox ajoute ce préfixe à l’en-tête HTTP.
 3. Configure `url` dans le module Roblox avec l’URL HTTPS stable du relais, suivie de `/v1/roblox/permadeath-death`.
 4. Fais pointer le relais vers le port configuré par `PORT` et conserve l’en-tête `Authorization` lors du transfert.
 5. Vérifie que les requêtes HTTP sont autorisées dans Roblox Studio/Game Settings et que le jeu a été publié après la création du secret.
