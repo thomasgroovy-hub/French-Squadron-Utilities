@@ -217,8 +217,6 @@ client.once(Events.ClientReady, (readyClient) => {
 
   void robloxIntegration.initializeDatabase();
 
-  robloxIntegration.startHttpServer();
-
   void registerCommands()
     .then(() => {
       console.log('[Discord] Command registration process completed.');
@@ -301,6 +299,8 @@ client.on(
     );
   }
 );
+
+robloxIntegration.startHttpServer();
 
 process.on(
   'unhandledRejection',

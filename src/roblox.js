@@ -1055,6 +1055,10 @@ export function createRobloxIntegration({ client, guildId }) {
     }
   });
 
+  app.get('/health', (_request, response) => {
+    response.status(200).json({ ok: true });
+  });
+
   function startHttpServer() {
     if (httpServer) return httpServer;
 
@@ -1063,7 +1067,7 @@ export function createRobloxIntegration({ client, guildId }) {
       console.error('[Roblox] ROBLOX_EVENT_SECRET or PERMADEATH_BOT_API_KEY is not configured. The death webhook will reject every request.');
     }
 
-    httpServer = app.listen(port, () => {
+    httpServer = app.listen(port, '0.0.0.0', () => {
       const address = httpServer.address();
       const activePort = typeof address === 'object' && address ? address.port : port;
       console.log(`[Roblox] Death webhook listening on port ${activePort}; expose it through the configured HTTPS relay.`);
