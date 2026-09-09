@@ -457,12 +457,30 @@ export function createModerationIntegration({ client }) {
     if (!(await ensureDatabase(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
+    const targetGuilds = [];
+    for (const guild of client.guilds.cache.values()) {
+      const member = await guild.members.fetch(target.id).catch(() => null);
+      if (member) targetGuilds.push({ guild, member });
+    }
+
+    try {
+      await target.send(createV2Message({
+        title: 'Vous avez été expulsé !',
+        description: 'Votre expulsion va être appliquée sur les serveurs suivants :',
+        sections: [
+          `**Serveur${targetGuilds.length > 1 ? 's' : ''} concerné${targetGuilds.length > 1 ? 's' : ''} :**\n${targetGuilds.length ? targetGuilds.map(({ guild }) => guild.name).join('\n') : 'Aucun serveur trouvé.'}`,
+          `**Raison :** ${reason}`,
+          `**Modérateur :** ${moderatorLabel(interaction)}`,
+        ],
+      }));
+    } catch (error) {
+      console.error(`[Moderation] Unable to DM expulsion target ${target.id} before actions:`, error.message);
+    }
+
     let succeeded = 0;
     let failed = 0;
-    for (const guild of client.guilds.cache.values()) {
+    for (const { guild, member } of targetGuilds) {
       try {
-        const member = await guild.members.fetch(target.id).catch(() => null);
-        if (!member) continue;
         await member.kick(reason);
         succeeded += 1;
       } catch (error) {
