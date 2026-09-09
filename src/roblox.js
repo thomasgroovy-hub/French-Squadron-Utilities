@@ -11,7 +11,6 @@ import {
   TextInputBuilder,
   TextInputStyle,
 } from 'discord.js';
-import { Tunnel } from 'cloudflared';
 import { createV2Message, createV2EphemeralError } from './components.js';
 import { SUPER_ADMIN_ROLE_ID, hasGuildPermission } from './permissions.js';
 
@@ -32,7 +31,6 @@ const VERIFICATION_LOG_CHANNEL_ID = '1546193398388494336';
 const VERIFICATION_CODE_LENGTH = 6;
 const VERIFICATION_EXPIRY_MINUTES = 15;
 const DATABASE_RETRY_DELAY_MS = 60_000;
-const QUICK_TUNNEL_START_TIMEOUT_MS = 30_000;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export const robloxCommands = [
@@ -121,14 +119,14 @@ function portFromEnvironment() {
 function bearerTokenFrom(request) {
   const authorization = request.get('authorization');
   const match = authorization?.match(/^Bearer\s+(.+)$/i);
-  return match?.[1] ?? null;
+  return match?.[1]?.trim() || null;
 }
 
 function tokensMatch(providedToken, expectedToken) {
   if (!providedToken || !expectedToken) return false;
 
   const provided = Buffer.from(providedToken);
-  const expected = Buffer.from(expectedToken);
+  const expected = Buffer.from(expectedToken.trim());
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
@@ -273,7 +271,6 @@ export function createRobloxIntegration({ client, guildId }) {
   let databaseInitialization = null;
   let lastDatabaseAttemptAt = 0;
   let httpServer = null;
-  let quickTunnel = null;
 
   const app = express();
   app.use(express.json({ limit: '32kb' }));
@@ -1039,61 +1036,7 @@ export function createRobloxIntegration({ client, guildId }) {
     }
   });
 
-  function startQuickTunnel(port) {
-    const localServiceUrl = `http://127.0.0.1:${port}`;
-    let publicUrlAnnounced = false;
-    let startupTimeout;
-
-    try {
-      const tunnel = Tunnel.quick(localServiceUrl, { '--no-autoupdate': true });
-      quickTunnel = tunnel;
-
-      startupTimeout = setTimeout(() => {
-        if (!publicUrlAnnounced) {
-          console.error(`[Roblox] Cloudflare Quick Tunnel did not provide a public URL within ${QUICK_TUNNEL_START_TIMEOUT_MS / 1000} seconds.`);
-        }
-      }, QUICK_TUNNEL_START_TIMEOUT_MS);
-      startupTimeout.unref();
-
-      tunnel.once('url', (baseUrl) => {
-        publicUrlAnnounced = true;
-        clearTimeout(startupTimeout);
-        console.log(`[Roblox] Webhook public URL: ${baseUrl}/v1/roblox/permadeath-death`);
-      });
-      tunnel.on('error', (error) => {
-        clearTimeout(startupTimeout);
-        console.error('[Roblox] Cloudflare Quick Tunnel could not start:', error.message);
-      });
-      tunnel.on('exit', (code, signal) => {
-        clearTimeout(startupTimeout);
-        if (quickTunnel === tunnel) quickTunnel = null;
-        if (!publicUrlAnnounced) {
-          console.error(`[Roblox] Cloudflare Quick Tunnel exited before it was ready (code=${code}, signal=${signal ?? 'none'}).`);
-        } else {
-          console.error(`[Roblox] Cloudflare Quick Tunnel stopped (code=${code}, signal=${signal ?? 'none'}). The webhook is no longer public.`);
-        }
-        if (httpServer) {
-          console.log('[Roblox] Scheduling Cloudflare Quick Tunnel reconnection in 5 seconds...');
-          setTimeout(() => {
-            if (!quickTunnel && httpServer) {
-              console.log('[Roblox] Attempting Cloudflare Quick Tunnel reconnection...');
-              startQuickTunnel(port);
-            }
-          }, 5000).unref();
-        }
-      });
-    } catch (error) {
-      console.error('[Roblox] Cloudflare Quick Tunnel could not start:', error.message);
-    }
-  }
-
-  function stopQuickTunnel() {
-    if (!quickTunnel) return;
-    quickTunnel.stop();
-    quickTunnel = null;
-  }
-
-  function startHttpServer({ startTunnel = true } = {}) {
+  function startHttpServer() {
     if (httpServer) return httpServer;
 
     const port = portFromEnvironment();
@@ -1104,8 +1047,7 @@ export function createRobloxIntegration({ client, guildId }) {
     httpServer = app.listen(port, () => {
       const address = httpServer.address();
       const activePort = typeof address === 'object' && address ? address.port : port;
-      console.log(`[Roblox] Death webhook listening on port ${activePort}.`);
-      if (startTunnel) startQuickTunnel(activePort);
+      console.log(`[Roblox] Death webhook listening on port ${activePort}; expose it through the configured HTTPS relay.`);
     });
     httpServer.on('error', (error) => {
       console.error('[Roblox] Death webhook server error:', error.message);
@@ -1115,7 +1057,6 @@ export function createRobloxIntegration({ client, guildId }) {
 
   async function stopHttpServer() {
     if (!httpServer) return;
-    stopQuickTunnel();
     await new Promise((resolve, reject) => httpServer.close((error) => (error ? reject(error) : resolve())));
     httpServer = null;
   }
@@ -1124,7 +1065,6 @@ export function createRobloxIntegration({ client, guildId }) {
     initializeDatabase,
     startHttpServer,
     stopHttpServer,
-    stopQuickTunnel,
     handleInteraction: handleRobloxInteraction,
   };
 }
