@@ -368,13 +368,31 @@ export function createModerationIntegration({ client }) {
     if (!(await ensureDatabase(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
+    const targetGuilds = [];
+    for (const guild of client.guilds.cache.values()) {
+      const member = await guild.members.fetch(target.id).catch(() => null);
+      if (member) targetGuilds.push({ guild, member });
+    }
+
+    try {
+      await target.send(createV2Message({
+        title: 'Vous avez été banni !',
+        description: 'Votre bannissement va être appliqué sur les serveurs suivants :',
+        sections: [
+          `**Serveur${targetGuilds.length > 1 ? 's' : ''} concerné${targetGuilds.length > 1 ? 's' : ''} :**\n${targetGuilds.length ? targetGuilds.map(({ guild }) => guild.name).join('\n') : 'Aucun serveur trouvé.'}`,
+          `**Raison :** ${reason}`,
+          `**Modérateur :** ${moderatorLabel(interaction)}`,
+        ],
+      }));
+    } catch (error) {
+      console.error(`[Moderation] Unable to DM ban target ${target.id} before actions:`, error.message);
+    }
+
     let succeeded = 0;
     let failed = 0;
     const bannedServers = [];
-    for (const guild of client.guilds.cache.values()) {
+    for (const { guild } of targetGuilds) {
       try {
-        const member = await guild.members.fetch(target.id).catch(() => null);
-        if (!member) continue;
         await guild.members.ban(target.id, { reason });
         succeeded += 1;
         bannedServers.push(guild.name);
@@ -387,18 +405,6 @@ export function createModerationIntegration({ client }) {
         failed += 1;
         console.error(`[Moderation] Ban failed in ${guild.name} (${guild.id}):`, error.message);
       }
-    }
-    try {
-      await target.send(createV2Message({
-        title: 'Vous avez été banni !',
-        description: 'Votre bannissement a été appliqué.',
-        sections: [
-          `**Serveur${bannedServers.length > 1 ? 's' : ''} où vous avez été banni :**\n${bannedServers.length ? bannedServers.join('\n') : 'Aucun serveur trouvé.'}`,
-          `**Raison :** ${reason}`,
-        ],
-      }));
-    } catch (error) {
-      console.error(`[Moderation] Unable to DM ban target ${target.id}:`, error.message);
     }
     await recordCase(target.id, 'bannissement', interaction, reason);
     await safeEditReply(interaction, createV2Message({
