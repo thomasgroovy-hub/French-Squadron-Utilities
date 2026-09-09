@@ -24,7 +24,6 @@ import {
 } from './components.js';
 
 const GUILD_ID = '1454217001626243288';
-const MODERATION_GUILD_ID = '1487258655840669807';
 
 const commands = [
   new SlashCommandBuilder()
@@ -58,8 +57,9 @@ const moderationIntegration = createModerationIntegration({
 });
 
 /**
- * Enregistre les commandes Discord et affiche précisément
- * quel serveur pose problème en cas d'erreur.
+ * Enregistre les commandes Discord globalement pour toutes les guildes
+ * où le bot est présent. Discord peut mettre jusqu'à une heure à propager
+ * une modification globale.
  */
 async function registerCommands() {
   const rest = new REST({ version: '10' })
@@ -93,48 +93,21 @@ async function registerCommands() {
 
   console.log('========================================');
 
-  const guildIds = [
-    GUILD_ID,
-    MODERATION_GUILD_ID,
-  ];
-
-  for (const guildId of guildIds) {
-    console.log(`[Discord] Testing guild: ${guildId}`);
-
-    try {
-      // Vérifie d'abord que le bot peut accéder au serveur
-      const guild = await client.guilds.fetch(guildId);
-
-      console.log(
-        `[Discord] Guild accessible: ${guild.name} (${guild.id})`
-      );
-
-      // Puis tente l'enregistrement des commandes
-      await rest.put(
-        Routes.applicationGuildCommands(
-          process.env.DISCORD_APPLICATION_ID,
-          guildId
-        ),
-        { body }
-      );
-
-      console.log(
-        `[Discord] Commands registered successfully for ${guild.name} (${guild.id})`
-      );
-    } catch (error) {
-      console.error('----------------------------------------');
-      console.error(
-        `[Discord] FAILED for guild ${guildId}`
-      );
-      console.error('Status:', error?.status);
-      console.error('Discord Code:', error?.code);
-      console.error('Message:', error?.message);
-
-      if (error?.rawError) {
-        console.error('Raw Discord Error:', error.rawError);
-      }
-
-      console.error('----------------------------------------');
+  try {
+    await rest.put(
+      Routes.applicationCommands(process.env.DISCORD_APPLICATION_ID),
+      { body },
+    );
+    console.log(
+      `[Discord] ${body.length} commands registered globally for every guild where the bot is present.`,
+    );
+  } catch (error) {
+    console.error('[Discord] Global command registration failed.');
+    console.error('Status:', error?.status);
+    console.error('Discord Code:', error?.code);
+    console.error('Message:', error?.message);
+    if (error?.rawError) {
+      console.error('Raw Discord Error:', error.rawError);
     }
   }
 
