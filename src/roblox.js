@@ -1,6 +1,6 @@
 import express from 'express';
 import mysql from 'mysql2/promise';
-import { randomInt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -126,6 +126,11 @@ function configuredEventSecret() {
   const configuredSecret = process.env.ROBLOX_EVENT_SECRET || process.env.PERMADEATH_BOT_API_KEY;
   if (!configuredSecret) return null;
   return configuredSecret.trim().replace(/^Bearer\s+/i, '').trim() || null;
+}
+
+function secretFingerprint(value) {
+  if (!value) return 'missing';
+  return `${value.length}:${createHash('sha256').update(value).digest('hex').slice(0, 12)}`;
 }
 
 function tokensMatch(providedToken, expectedToken) {
@@ -985,7 +990,15 @@ export function createRobloxIntegration({ client, guildId }) {
   }
 
   app.post('/v1/roblox/permadeath-death', async (request, response) => {
-    if (!tokensMatch(bearerTokenFrom(request), configuredEventSecret())) {
+    const providedToken = bearerTokenFrom(request);
+    const expectedToken = configuredEventSecret();
+    if (!tokensMatch(providedToken, expectedToken)) {
+      console.warn('[Roblox] Webhook authentication failed:', {
+        authorizationHeader: request.get('authorization') ? 'present' : 'missing',
+        providedToken: secretFingerprint(providedToken),
+        configuredToken: secretFingerprint(expectedToken),
+        configuredVariable: process.env.ROBLOX_EVENT_SECRET ? 'ROBLOX_EVENT_SECRET' : process.env.PERMADEATH_BOT_API_KEY ? 'PERMADEATH_BOT_API_KEY' : 'missing',
+      });
       response.status(401).json({ error: 'Unauthorized.' });
       return;
     }
