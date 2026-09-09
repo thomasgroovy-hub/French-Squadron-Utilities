@@ -5,9 +5,12 @@ import { readFile } from 'node:fs/promises';
 const indexSource = await readFile(new URL('../src/index.js', import.meta.url), 'utf8');
 const moderationSource = await readFile(new URL('../src/moderation.js', import.meta.url), 'utf8');
 
-test('slash commands use global registration', () => {
+test('slash commands synchronize every guild and new guilds', () => {
+  assert.match(indexSource, /Routes\.applicationGuildCommands/);
+  assert.match(indexSource, /client\.guilds\.cache\.values\(\)/);
+  assert.match(indexSource, /Events\.GuildCreate/);
   assert.match(indexSource, /Routes\.applicationCommands\(process\.env\.DISCORD_APPLICATION_ID\)/);
-  assert.doesNotMatch(indexSource, /Routes\.applicationGuildCommands/);
+  assert.match(indexSource, /\{ body: \[\] \}/);
 });
 
 test('global ban and expulsion attempt the DM before moderation actions', () => {

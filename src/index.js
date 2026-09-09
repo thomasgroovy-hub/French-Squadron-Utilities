@@ -56,10 +56,20 @@ const moderationIntegration = createModerationIntegration({
   client,
 });
 
+/** Enregistre les commandes dans une guilde précise. */
+async function registerCommandsForGuild(rest, guildId, body) {
+  await rest.put(
+    Routes.applicationGuildCommands(
+      process.env.DISCORD_APPLICATION_ID,
+      guildId,
+    ),
+    { body },
+  );
+}
+
 /**
- * Enregistre les commandes Discord globalement pour toutes les guildes
- * où le bot est présent. Discord peut mettre jusqu'à une heure à propager
- * une modification globale.
+ * Synchronise immédiatement toutes les guildes connues et les nouvelles
+ * guildes rejointes, sans conserver de commandes globales en doublon.
  */
 async function registerCommands() {
   const rest = new REST({ version: '10' })
@@ -96,13 +106,11 @@ async function registerCommands() {
   try {
     await rest.put(
       Routes.applicationCommands(process.env.DISCORD_APPLICATION_ID),
-      { body },
+      { body: [] },
     );
-    console.log(
-      `[Discord] ${body.length} commands registered globally for every guild where the bot is present.`,
-    );
+    console.log('[Discord] Stale global commands removed.');
   } catch (error) {
-    console.error('[Discord] Global command registration failed.');
+    console.error('[Discord] Unable to remove stale global commands.');
     console.error('Status:', error?.status);
     console.error('Discord Code:', error?.code);
     console.error('Message:', error?.message);
@@ -111,10 +119,31 @@ async function registerCommands() {
     }
   }
 
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      await registerCommandsForGuild(rest, guild.id, body);
+      console.log(`[Discord] ${body.length} commands registered for ${guild.name} (${guild.id}).`);
+    } catch (error) {
+      console.error(`[Discord] Command registration failed for ${guild.name} (${guild.id}).`, error.message);
+    }
+  }
+
   console.log('========================================');
   console.log('[Discord] Command registration test finished');
   console.log('========================================');
 }
+
+client.on(Events.GuildCreate, (guild) => {
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const body = commands.map((command) => command.toJSON());
+  void registerCommandsForGuild(rest, guild.id, body)
+    .then(() => {
+      console.log(`[Discord] Commands registered for new guild ${guild.name} (${guild.id}).`);
+    })
+    .catch((error) => {
+      console.error(`[Discord] Command registration failed for new guild ${guild.name} (${guild.id}).`, error.message);
+    });
+});
 
 async function handleInteraction(interaction) {
   if (
