@@ -425,12 +425,37 @@ export function createModerationIntegration({ client }) {
     await interaction.deferReply();
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison')?.trim() || 'Retrait de l’exclusion';
-    let succeeded = 0;
-    let failed = 0;
+    const targetGuilds = [];
+    let inspectionFailures = 0;
     for (const guild of client.guilds.cache.values()) {
       try {
-        const member = await guild.members.fetch(target.id).catch(() => null);
-        if (!member) continue;
+        const member = await guild.members.fetch(target.id);
+        if (member.communicationDisabledUntilTimestamp > Date.now()) {
+          targetGuilds.push({ guild, member });
+        }
+      } catch (error) {
+        inspectionFailures += 1;
+        console.error(`[Moderation] Unable to inspect exclusion in ${guild.name} (${guild.id}):`, error.message);
+      }
+    }
+    if (!targetGuilds.length && inspectionFailures) {
+      await safeEditReply(interaction, createV2Message({
+        title: 'Vérification impossible',
+        description: 'Impossible de vérifier les exclusions sur certains serveurs en raison des permissions du bot.',
+      }));
+      return;
+    }
+    if (!targetGuilds.length) {
+      await safeEditReply(interaction, createV2Message({
+        title: 'Aucune action nécessaire',
+        description: 'Cet utilisateur n’est actuellement exclu sur aucun serveur.',
+      }));
+      return;
+    }
+    let succeeded = 0;
+    let failed = 0;
+    for (const { guild, member } of targetGuilds) {
+      try {
         await member.timeout(null, reason);
         succeeded += 1;
       } catch (error) {
@@ -440,7 +465,7 @@ export function createModerationIntegration({ client }) {
     }
     await safeEditReply(interaction, createV2Message({
       title: 'Exclusion retirée',
-      description: `L’exclusion de ${target} a été retirée partout où cela était possible.\n**Modérateur :** ${moderatorLabel(interaction)}`,
+      description: `L’exclusion de ${target} a été retirée sur ${succeeded} serveur(s).\n**Modérateur :** ${moderatorLabel(interaction)}`,
       sections: [`**Raison :** ${reason}`],
     }));
     await sendLog('FIN D’EXCLUSION', `${target} n’est plus exclu.`, [
@@ -543,19 +568,36 @@ export function createModerationIntegration({ client }) {
     if (!(await ensureDatabase(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison')?.trim() || 'Retrait du bannissement';
-    const [storedBans] = await pool.execute(
-      `SELECT guild_id, guild_name FROM ${BAN_TABLE} WHERE discord_id = ? ORDER BY banned_at ASC`,
-      [target.id],
-    );
-    console.info(`[Moderation] Stored bans for ${target.id}:`, storedBans.map(b => `${b.guild_name} (${b.guild_id})`).join(', '));
+    const targetGuilds = [];
+    let inspectionFailures = 0;
+    for (const guild of client.guilds.cache.values()) {
+      try {
+        await guild.bans.fetch(target.id);
+        targetGuilds.push(guild);
+      } catch (error) {
+        if (error?.code === 10026 || error?.status === 404) continue;
+        inspectionFailures += 1;
+        console.error(`[Moderation] Unable to inspect ban in ${guild.name} (${guild.id}):`, error.message);
+      }
+    }
+    if (!targetGuilds.length && inspectionFailures) {
+      await safeEditReply(interaction, createV2Message({
+        title: 'Vérification impossible',
+        description: 'Impossible de vérifier les bannissements sur certains serveurs en raison des permissions du bot.',
+      }));
+      return;
+    }
+    if (!targetGuilds.length) {
+      await safeEditReply(interaction, createV2Message({
+        title: 'Aucune action nécessaire',
+        description: 'Cet utilisateur n’est actuellement banni sur aucun serveur.',
+      }));
+      return;
+    }
+    console.info(`[Moderation] Actual bans for ${target.id}:`, targetGuilds.map(guild => `${guild.name} (${guild.id})`).join(', '));
     let succeeded = 0;
     let failed = 0;
-    for (const ban of storedBans) {
-      const guild = client.guilds.cache.get(ban.guild_id);
-      if (!guild) {
-        console.warn(`[Moderation] Guild ${ban.guild_id} not cached, skipping unban for ${target.id}`);
-        continue;
-      }
+    for (const guild of targetGuilds) {
       try {
         await guild.bans.remove(target.id, reason);
         succeeded += 1;
@@ -566,13 +608,11 @@ export function createModerationIntegration({ client }) {
       }
     }
     try {
-      if (storedBans.length) {
-        await target.send(createV2Message({
-          title: 'Vous avez été débanni !',
-          description: 'Votre bannissement a été retiré sur les serveurs suivants :',
-          sections: [storedBans.map((ban) => ban.guild_name).join('\n')],
-        }));
-      }
+      await target.send(createV2Message({
+        title: 'Vous avez été débanni !',
+        description: 'Votre bannissement a été retiré sur les serveurs suivants :',
+        sections: [targetGuilds.map((guild) => guild.name).join('\n')],
+      }));
     } catch (error) {
       console.error(`[Moderation] Unable to DM unban target ${target.id}:`, error.message);
     }
@@ -597,6 +637,18 @@ export function createModerationIntegration({ client }) {
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison')?.trim() || 'Purge des avertissements';
     try {
+      const [warnings] = await pool.execute(
+        `SELECT COUNT(*) AS warning_count FROM ${STRIKE_TABLE} WHERE discord_id = ?`,
+        [target.id],
+      );
+      const warningCount = Number(warnings[0]?.warning_count || 0);
+      if (!warningCount) {
+        await safeEditReply(interaction, createV2Message({
+          title: 'Aucune action nécessaire',
+          description: 'Cet utilisateur n’a actuellement aucun avertissement enregistré.',
+        }));
+        return;
+      }
       const [result] = await pool.execute(`DELETE FROM ${STRIKE_TABLE} WHERE discord_id = ?`, [target.id]);
       await safeEditReply(interaction, createV2Message({
         title: 'Avertissements purgés',
