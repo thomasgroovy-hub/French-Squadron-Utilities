@@ -14,25 +14,26 @@ import {
 } from './moderation.js';
 
 import {
-  createRobloxIntegration,
-  robloxCommands,
-} from './roblox.js';
-
-import {
   createV2EphemeralError,
   createV2Message,
 } from './components.js';
-
-const GUILD_ID = '1454217001626243288';
+import { createPermadeathNotificationIntegration } from './permadeath-notifications.js';
+import { createDatabasePool } from './database.js';
+import {
+  createRobloxVerificationIntegration,
+  robloxVerificationCommands,
+} from './roblox-verification.js';
 
 const commands = [
   new SlashCommandBuilder()
     .setName('ping')
     .setDescription('Mesure le temps de réponse du bot.'),
 
-  ...robloxCommands,
+  ...robloxVerificationCommands,
   ...moderationCommands,
 ];
+
+const databasePool = createDatabasePool();
 
 // Vérification des variables d'environnement
 for (const key of ['DISCORD_TOKEN', 'DISCORD_APPLICATION_ID']) {
@@ -44,17 +45,37 @@ for (const key of ['DISCORD_TOKEN', 'DISCORD_APPLICATION_ID']) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
 });
 
-const robloxIntegration = createRobloxIntegration({
+const robloxVerificationIntegration = createRobloxVerificationIntegration({
   client,
-  guildId: GUILD_ID,
+  guildId: '1454217001626243288',
+  pool: databasePool,
 });
 
 const moderationIntegration = createModerationIntegration({
   client,
+  pool: databasePool,
 });
+
+const permadeathIntegration = createPermadeathNotificationIntegration({
+  client,
+  pool: databasePool,
+});
+permadeathIntegration.start();
+
+let webServer = null;
+if (process.env.START_WEB_SERVER === 'true') {
+  const { startWebServer } = await import('./web/server.js');
+  webServer = startWebServer({ pool: databasePool });
+}
+
 
 /** Enregistre les commandes dans une guilde précise. */
 async function registerCommandsForGuild(rest, guildId, body) {
@@ -163,39 +184,13 @@ async function handleInteraction(interaction) {
         ? `${client.ws.ping}ms`
         : '—';
 
-    let robloxPing = '—';
-
-    try {
-      const robloxStart = Date.now();
-
-      await fetch(
-        'https://users.roblox.com/v1/usernames/users',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            usernames: ['Roblox'],
-            excludeBannedUsers: false,
-          }),
-          signal: AbortSignal.timeout(2500),
-        }
-      );
-
-      robloxPing = `${Date.now() - robloxStart}ms`;
-    } catch {
-      robloxPing = 'Hors ligne';
-    }
-
     await interaction.editReply(
       createV2Message({
         title: 'Pong !',
         description:
           `Temps de réponse : **${roundTrip}ms**`,
         sections: [
-          `**API Discord :** ${wsPing}\n` +
-          `**API Roblox :** ${robloxPing}`,
+          `**API Discord :** ${wsPing}`,
         ],
       })
     );
@@ -214,8 +209,6 @@ client.once(Events.ClientReady, (readyClient) => {
   console.log(
     `[Discord] Application ID: ${readyClient.application.id}`
   );
-
-  void robloxIntegration.initializeDatabase();
 
   void registerCommands()
     .then(() => {
@@ -242,9 +235,9 @@ client.on(Events.InteractionCreate, (interaction) => {
     });
 
     if (
-      await robloxIntegration.handleInteraction(interaction)
+      await robloxVerificationIntegration.handleInteraction(interaction)
     ) {
-      console.log('[Discord] Interaction handled by Roblox integration.');
+      console.log('[Discord] Interaction handled by Roblox verification integration.');
       return;
     }
 
@@ -300,8 +293,6 @@ client.on(
   }
 );
 
-robloxIntegration.startHttpServer();
-
 process.on(
   'unhandledRejection',
   (error) => {
@@ -317,13 +308,13 @@ async function shutdown(signal) {
     `[Bot] ${signal} received. Stopping services...`
   );
 
-  try {
-    await robloxIntegration.stopHttpServer();
-  } catch (error) {
-    console.error(
-      '[Roblox] Error closing HTTP server:',
-      error.message
-    );
+  if (webServer) {
+    try {
+      await new Promise((resolve, reject) => webServer.close((err) => (err ? reject(err) : resolve())));
+      console.log('[WebServer] Web server closed successfully.');
+    } catch (error) {
+      console.error('[WebServer] Error closing web server:', error.message);
+    }
   }
 
   client.destroy();

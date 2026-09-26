@@ -1,4 +1,3 @@
-import mysql from 'mysql2/promise';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -7,6 +6,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 import { createV2Message, createV2EphemeralError } from './components.js';
+import { createDatabasePool } from './database.js';
 import { MODERATION_ROLE_ID, SUPER_ADMIN_ROLE_ID, hasGuildPermission } from './permissions.js';
 
 const MODERATION_GUILD_ID = '1487258655840669807';
@@ -75,22 +75,6 @@ export const moderationCommands = [
     .addStringOption((option) => option.setName('raison').setDescription('Raison de l’expulsion').setRequired(true).setMaxLength(1000)),
 ];
 
-function createPool() {
-  const required = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE'];
-  if (required.some((name) => !process.env[name])) return null;
-  return mysql.createPool({
-    host: process.env.MYSQL_HOST,
-    port: Number.parseInt(process.env.MYSQL_PORT || '3306', 10),
-    user: process.env.MYSQL_USER,
-    password: process.env.MYSQL_PASSWORD,
-    database: process.env.MYSQL_DATABASE,
-    waitForConnections: true,
-    connectionLimit: 3,
-    queueLimit: 0,
-    connectTimeout: 10_000,
-  });
-}
-
 function logField(name, value, inline = false) {
   return { name, value: String(value).slice(0, 1024) || '—', inline };
 }
@@ -119,8 +103,7 @@ function parseTimeoutDuration(value) {
   return { milliseconds, label: `${amount}${match[2]}` };
 }
 
-export function createModerationIntegration({ client }) {
-  const pool = createPool();
+export function createModerationIntegration({ client, pool = createDatabasePool() }) {
   let databaseReady = false;
   let databaseInitialization;
 

@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   ContainerBuilder,
+  EmbedBuilder,
   MessageFlags,
   SectionBuilder,
   SeparatorBuilder,
@@ -8,6 +9,47 @@ import {
   TextDisplayBuilder,
   ThumbnailBuilder,
 } from 'discord.js';
+
+/**
+ * Accent unique du bot, réutilisé par tous les embeds afin de garder une
+ * identité visuelle cohérente entre les messages directs et le portail web.
+ */
+export const BOT_ACCENT_COLOR = 0x475569;
+
+export function createPermadeathNotificationEmbed(timestamp = new Date()) {
+  return new EmbedBuilder()
+    .setTitle('Tu es mort pendant une session roleplay !')
+    .setDescription(
+      'Ton personnage est désormais **mort de manière permanente**, si tu trouves cette mort injuste, alors ouvre un **ticket** afin de contester ta mort.\n\nLe Département de la Continuité de la FPCS'
+    )
+    .setColor(BOT_ACCENT_COLOR)
+    .setFooter({ text: 'FPCS Utilities' })
+    .setTimestamp(timestamp);
+}
+
+/**
+ * Embed envoyé en message direct au candidat dont la candidature vient d'être
+ * acceptée depuis l'onglet « Réponses » du portail web.
+ */
+export function createApplicationAcceptedEmbed({
+  formTitle = null,
+  applicantName = null,
+  grantedRoleName = null,
+  timestamp = new Date(),
+} = {}) {
+  const embed = new EmbedBuilder()
+    .setTitle('Candidature acceptée')
+    .setDescription('Tu as été accepté !')
+    .setColor(BOT_ACCENT_COLOR)
+    .setFooter({ text: 'FPCS Utilities' })
+    .setTimestamp(timestamp);
+
+  if (formTitle) embed.addFields({ name: 'Formulaire', value: formTitle, inline: false });
+  if (grantedRoleName) embed.addFields({ name: 'Rôle attribué', value: grantedRoleName, inline: false });
+  if (applicantName) embed.addFields({ name: 'Candidat', value: applicantName, inline: false });
+
+  return embed;
+}
 
 export function createSeparator(spacing = SeparatorSpacingSize.Small, divider = true) {
   return new SeparatorBuilder().setDivider(divider).setSpacing(spacing);
