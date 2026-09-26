@@ -439,8 +439,8 @@ export function createRobloxVerificationIntegration({
     try {
       const [rows] = await pool.execute(
         discordUser
-          ? 'SELECT discord_user_id, roblox_user_id, roblox_username, verification_rank FROM roblox_discord_links WHERE discord_user_id = ? LIMIT 1'
-          : 'SELECT discord_user_id, roblox_user_id, roblox_username, verification_rank FROM roblox_discord_links WHERE LOWER(roblox_username) = LOWER(?) LIMIT 1',
+          ? 'SELECT discord_user_id, roblox_user_id, roblox_username, verified_at FROM roblox_discord_links WHERE discord_user_id = ? LIMIT 1'
+          : 'SELECT discord_user_id, roblox_user_id, roblox_username, verified_at FROM roblox_discord_links WHERE LOWER(roblox_username) = LOWER(?) LIMIT 1',
         [discordUser?.id || robloxName],
       );
       const link = rows[0];
