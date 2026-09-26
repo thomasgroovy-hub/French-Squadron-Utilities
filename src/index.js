@@ -70,12 +70,6 @@ const permadeathIntegration = createPermadeathNotificationIntegration({
 });
 permadeathIntegration.start();
 
-let webServer = null;
-if (process.env.START_WEB_SERVER === 'true') {
-  const { startWebServer } = await import('./web/server.js');
-  webServer = startWebServer({ pool: databasePool });
-}
-
 
 /** Enregistre les commandes dans une guilde précise. */
 async function registerCommandsForGuild(rest, guildId, body) {
@@ -307,15 +301,6 @@ async function shutdown(signal) {
   console.log(
     `[Bot] ${signal} received. Stopping services...`
   );
-
-  if (webServer) {
-    try {
-      await new Promise((resolve, reject) => webServer.close((err) => (err ? reject(err) : resolve())));
-      console.log('[WebServer] Web server closed successfully.');
-    } catch (error) {
-      console.error('[WebServer] Error closing web server:', error.message);
-    }
-  }
 
   client.destroy();
 
