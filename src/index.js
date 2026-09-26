@@ -53,11 +53,14 @@ const client = new Client({
   ],
 });
 
-const robloxVerificationIntegration = createRobloxVerificationIntegration({
+const robloxVerificationIntegration = await createRobloxVerificationIntegration({
   client,
   guildId: '1454217001626243288',
   pool: databasePool,
 });
+
+// Keeps the companion site's copy of the Roblox links aligned with this one.
+robloxVerificationIntegration.syncSiteMirror();
 
 const moderationIntegration = createModerationIntegration({
   client,

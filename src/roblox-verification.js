@@ -11,6 +11,7 @@ import {
 import { randomInt } from 'node:crypto';
 import { createV2EphemeralError, createV2Message } from './components.js';
 import { createDatabasePool } from './database.js';
+import { mirrorRobloxLink, reconcileRobloxMirror, unmirrorRobloxLink } from './roblox-mirror.js';
 import {
   MODERATION_ROLE_ID,
   ROBLOX_LOOKUP_ROLE_ID,
@@ -120,11 +121,36 @@ function makeCode() {
   )).join('');
 }
 
-export function createRobloxVerificationIntegration({
+export async function createRobloxVerificationIntegration({
   client,
   guildId,
   pool = createDatabasePool(),
 }) {
+  async function ensureTables() {
+    if (!pool) return;
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS roblox_discord_links (
+        discord_user_id VARCHAR(20) NOT NULL PRIMARY KEY,
+        roblox_user_id BIGINT UNSIGNED NOT NULL,
+        roblox_username VARCHAR(20) NOT NULL,
+        verification_rank BIGINT UNSIGNED NOT NULL DEFAULT 0,
+        verified_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY roblox_discord_links_roblox_user_id (roblox_user_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS roblox_pending_links (
+        discord_user_id VARCHAR(20) NOT NULL PRIMARY KEY,
+        roblox_user_id BIGINT UNSIGNED NOT NULL,
+        roblox_username VARCHAR(20) NOT NULL,
+        verification_code VARCHAR(6) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        INDEX idx_expires (expires_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  await ensureTables();
   async function hasVerificationAccess(interaction) {
     return hasGuildPermission({
       client,
@@ -396,8 +422,8 @@ export function createRobloxVerificationIntegration({
         }
         await connection.execute('DELETE FROM roblox_discord_links WHERE discord_user_id = ?', [interaction.user.id]);
         await connection.execute(
-          'INSERT INTO roblox_discord_links (discord_user_id, roblox_user_id, roblox_username) VALUES (?, ?, ?)',
-          [interaction.user.id, pending.roblox_user_id, profile.username],
+          'INSERT INTO roblox_discord_links (discord_user_id, roblox_user_id, roblox_username, verification_rank, verified_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP())',
+          [interaction.user.id, pending.roblox_user_id, profile.username, Math.floor(Date.now() / 1000)],
         );
         await connection.execute('DELETE FROM roblox_pending_links WHERE discord_user_id = ?', [interaction.user.id]);
         await connection.commit();
@@ -407,6 +433,10 @@ export function createRobloxVerificationIntegration({
       } finally {
         connection.release();
       }
+
+      // The site reads its own copy, so the link has to be mirrored once the
+      // bot's own transaction is committed.
+      await mirrorRobloxLink(interaction.user.id, { pool });
 
       const assigned = await updateVerifiedRole(interaction.user.id);
       await interaction.editReply(createV2Message({
@@ -509,6 +539,7 @@ export function createRobloxVerificationIntegration({
         'DELETE FROM roblox_discord_links WHERE discord_user_id = ?',
         [target.id],
       );
+      await unmirrorRobloxLink(target.id);
       await updateVerifiedRole(target.id, true);
       await interaction.editReply(`La liaison de ${target} avec **${rows[0].roblox_username}** a été supprimée.`);
     } catch (error) {
@@ -559,7 +590,15 @@ export function createRobloxVerificationIntegration({
     return false;
   }
 
-  return { handleInteraction };
+  return {
+    handleInteraction,
+    /**
+     * Re-aligns the site's mirror with the bot's table. Called on startup so a
+     * failed write or a manual edit is repaired, and so links that predate the
+     * mirror get backfilled.
+     */
+    syncSiteMirror: () => reconcileRobloxMirror({ pool }),
+  };
 }
 
 function formatAccountAge(createdAt, now = new Date()) {
