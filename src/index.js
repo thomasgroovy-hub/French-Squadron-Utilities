@@ -18,6 +18,7 @@ import {
   createV2Message,
 } from './components.js';
 import { createPermadeathNotificationIntegration } from './permadeath-notifications.js';
+import { createStrikeEventRelay } from './strike-event-relay.js';
 import { createDatabasePool } from './database.js';
 import {
   createRobloxVerificationIntegration,
@@ -75,6 +76,13 @@ const permadeathIntegration = createPermadeathNotificationIntegration({
   pool: databasePool,
 });
 permadeathIntegration.start();
+
+// Relays every strike change made on the companion site to the ethics-committee
+// log channel. The site writes the audit rows; the bot owns the Discord side.
+const strikeEventRelay = createStrikeEventRelay({
+  client,
+  pool: databasePool,
+});
 
 
 /** Enregistre les commandes dans une guilde précise. */
@@ -222,6 +230,10 @@ client.once(Events.ClientReady, (readyClient) => {
     });
 
   void moderationIntegration.initializeDatabase();
+
+  // Only once the gateway is up can the relay resolve the target channel, so a
+  // backlog accumulated while the bot was down goes out after login.
+  strikeEventRelay.start();
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
@@ -308,6 +320,7 @@ async function shutdown(signal) {
     `[Bot] ${signal} received. Stopping services...`
   );
 
+  strikeEventRelay.stop();
   client.destroy();
 
   process.exit(0);
