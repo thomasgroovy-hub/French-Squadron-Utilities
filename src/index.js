@@ -23,6 +23,9 @@ import {
   createRobloxVerificationIntegration,
   robloxVerificationCommands,
 } from './roblox-verification.js';
+import { printVersionBanner } from './version.js';
+
+printVersionBanner();
 
 const commands = [
   new SlashCommandBuilder()
