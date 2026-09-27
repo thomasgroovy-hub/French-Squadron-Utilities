@@ -85,11 +85,28 @@ export async function ensurePermadeathDeathsTable(pool) {
   return state.initialization;
 }
 
+const deathsTableColumns = new WeakMap();
+
+/**
+ * The death log is declared by both repositories with `CREATE TABLE IF NOT
+ * EXISTS`, so whichever boots first fixes the real shape and the other DDL is
+ * a no-op. The companion site declares the narrower historical shape, with no
+ * `roblox_username`. Probing once per pool lets the writer target whatever
+ * actually exists instead of failing every insert with ER_BAD_FIELD_ERROR.
+ */
+export async function getDeathTableColumns(pool) {
+  if (deathsTableColumns.has(pool)) return deathsTableColumns.get(pool);
+  const [rows] = await pool.query(`SHOW COLUMNS FROM ${PERMADEATH_DEATHS_TABLE}`);
+  const columns = new Set(rows.map((row) => row.Field));
+  deathsTableColumns.set(pool, columns);
+  return columns;
+}
+
 /**
  * Appends one death event. Never throws: the DM notification and the death log
  * are independent, and neither may take the other down. The Discord message id
- * is the stable event key, so a redelivered message cannot create a second
- * row (the unique key makes the insert idempotent when it exists).
+ * is the stable event key, so a redelivered message cannot create a second row
+ * on a table that carries the unique key.
  */
 export async function recordPermadeathDeath({
   pool,
@@ -104,19 +121,32 @@ export async function recordPermadeathDeath({
 
   try {
     if (!(await ensurePermadeathDeathsTable(pool))) return false;
+
+    const available = await getDeathTableColumns(pool);
+    const candidate = [
+      ['discord_user_id', discordUserId],
+      ['roblox_user_id', String(robloxUserId)],
+      ['roblox_username', robloxUsername],
+      ['event_id', eventId],
+      ['context', context],
+      ['occurred_at', occurredAt],
+    ].filter(([column]) => available.has(column));
+
+    if (!available.has('discord_user_id') || !available.has('roblox_user_id')) {
+      log('error', `${PERMADEATH_DEATHS_TABLE} lacks the mandatory columns; death log disabled.`);
+      return false;
+    }
+
+    const names = candidate.map(([column]) => column);
+    const values = candidate.map(([, value]) => value);
+    const dedupe = available.has('event_id')
+      ? ' ON DUPLICATE KEY UPDATE event_id = event_id'
+      : '';
+
     await pool.execute(
-      `INSERT INTO ${PERMADEATH_DEATHS_TABLE}
-         (discord_user_id, roblox_user_id, roblox_username, event_id, context, occurred_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE event_id = event_id`,
-      [
-        discordUserId,
-        String(robloxUserId),
-        robloxUsername,
-        eventId,
-        context,
-        occurredAt,
-      ],
+      `INSERT INTO ${PERMADEATH_DEATHS_TABLE} (${names.join(', ')})
+       VALUES (${names.map(() => '?').join(', ')})${dedupe}`,
+      values,
     );
     return true;
   } catch (error) {

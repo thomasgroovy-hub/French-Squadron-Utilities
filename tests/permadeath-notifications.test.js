@@ -15,15 +15,35 @@ const LINK = {
   roblox_username: 'Pilot_42',
 };
 
+const FULL_COLUMNS = [
+  'id', 'discord_user_id', 'roblox_user_id', 'roblox_username',
+  'event_id', 'context', 'occurred_at', 'created_at',
+];
+
+// The shape the companion site actually created: same table, no roblox_username.
+const SITE_COLUMNS = [
+  'id', 'discord_user_id', 'roblox_user_id', 'event_id', 'context',
+  'occurred_at', 'created_at',
+];
+
 /**
  * Mocked pool in the same spirit as the moderation tests: records every
  * statement so a test can assert what was sent and with which parameters.
  */
-function createMockPool({ link = LINK, failInsert = null, failDdl = null } = {}) {
-  const calls = { ddl: [], select: [], insert: [] };
+function createMockPool({
+  link = LINK,
+  failInsert = null,
+  failDdl = null,
+  columns = FULL_COLUMNS,
+} = {}) {
+  const calls = { ddl: [], columns: [], select: [], insert: [] };
   return {
     calls,
     query: async (sql) => {
+      if (/^SHOW COLUMNS/i.test(sql.trim())) {
+        calls.columns.push(sql);
+        return [columns.map((Field) => ({ Field }))];
+      }
       calls.ddl.push(sql);
       if (failDdl) throw new Error(failDdl);
       return [[]];
@@ -196,6 +216,37 @@ test('a DM failure still records the death and skips the voice disconnect', asyn
   assert.equal(pool.calls.insert.length, 1, 'the death must still be recorded');
   assert.equal(pool.calls.insert[0].parameters[0], '123456789012345678');
   assert.deepEqual(disconnected, [], 'no voice disconnect when the DM failed');
+});
+
+test('records into the narrower table the site created, without roblox_username', async () => {
+  const { client } = createMockClient();
+  const pool = createMockPool({ columns: SITE_COLUMNS });
+  const integration = createPermadeathNotificationIntegration({ client, pool });
+
+  await integration.handleMessage({ ...PERMADEATH_MESSAGE });
+
+  assert.equal(pool.calls.insert.length, 1, 'the death must be recorded');
+  const { sql, parameters } = pool.calls.insert[0];
+  assert.ok(!/roblox_username/.test(sql), 'must not name a column the table lacks');
+  assert.deepEqual(parameters, [
+    '123456789012345678',
+    '987654321',
+    'message-1',
+    'Roblox username: OtherUser',
+    PERMADEATH_MESSAGE.createdAt,
+  ]);
+});
+
+test('probes the table columns once per pool instead of on every death', async () => {
+  const { client } = createMockClient();
+  const pool = createMockPool();
+  const integration = createPermadeathNotificationIntegration({ client, pool });
+
+  await integration.handleMessage({ ...PERMADEATH_MESSAGE, id: 'message-a' });
+  await integration.handleMessage({ ...PERMADEATH_MESSAGE, id: 'message-b' });
+
+  assert.equal(pool.calls.columns.length, 1, 'SHOW COLUMNS must be cached');
+  assert.equal(pool.calls.insert.length, 2);
 });
 
 test('a failing CREATE TABLE is logged and does not throw', async () => {
