@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  Events,
   InteractionContextType,
   MessageFlags,
   ModalBuilder,
@@ -803,6 +804,18 @@ export async function createRobloxVerificationIntegration({
     }
     return false;
   }
+
+  client.on(Events.GuildMemberAdd, async (member) => {
+    try {
+      if (member.user.bot) return;
+      if (!(await isGuildEnrolled(member.guild.id))) return;
+      const link = await getLinkByDiscordId(member.id);
+      if (!link) return;
+      await syncNickname(member, link.roblox_username, { overwrite: false });
+    } catch (error) {
+      console.error('[NicknameSync] guildMemberAdd failed:', error);
+    }
+  });
 
   return {
     handleInteraction,
