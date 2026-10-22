@@ -121,6 +121,15 @@ function makeCode() {
   )).join('');
 }
 
+// Returns one of: 'renamed' | 'has_nickname' | 'not_manageable' | 'skipped_bot'
+async function syncNickname(member, robloxUsername, { overwrite = false } = {}) {
+  if (member.user.bot) return 'skipped_bot';
+  if (!overwrite && member.nickname) return 'has_nickname';
+  if (!member.manageable) return 'not_manageable';
+  await member.setNickname(robloxUsername.slice(0, 32), 'Synchronisation Roblox');
+  return 'renamed';
+}
+
 export async function createRobloxVerificationIntegration({
   client,
   guildId,
@@ -438,11 +447,32 @@ export async function createRobloxVerificationIntegration({
       // bot's own transaction is committed.
       await mirrorRobloxLink(interaction.user.id, { pool });
 
+      let nicknameFailed = false;
+      if (interaction.member) {
+        try {
+          const nicknameResult = await syncNickname(
+            interaction.member,
+            profile.username,
+            { overwrite: true },
+          );
+          nicknameFailed = nicknameResult === 'not_manageable';
+        } catch (error) {
+          console.error('[RobloxVerification] Unable to update nickname:', error.message);
+          nicknameFailed = true;
+        }
+      }
+
       const assigned = await updateVerifiedRole(interaction.user.id);
+      const sections = [
+        assigned ? 'Le rôle vérifié a été attribué.' : 'La liaison est enregistrée, mais le rôle n’a pas pu être attribué.',
+      ];
+      if (nicknameFailed) {
+        sections.push('Ton compte est lié, mais je n’ai pas pu modifier ton surnom (permissions du bot).');
+      }
       await interaction.editReply(createV2Message({
         title: 'Vérification réussie',
         description: `**${profile.username}** est associé à ton compte Discord.`,
-        sections: [assigned ? 'Le rôle vérifié a été attribué.' : 'La liaison est enregistrée, mais le rôle n’a pas pu être attribué.'],
+        sections,
       }));
     } catch (error) {
       console.error('[RobloxVerification] Unable to verify account:', error.message);
