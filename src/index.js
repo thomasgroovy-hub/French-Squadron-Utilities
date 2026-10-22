@@ -51,6 +51,7 @@ for (const key of ['DISCORD_TOKEN', 'DISCORD_APPLICATION_ID']) {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,

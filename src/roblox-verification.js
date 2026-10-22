@@ -2,6 +2,8 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  InteractionContextType,
+  MessageFlags,
   ModalBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
@@ -33,6 +35,11 @@ export const robloxVerificationCommands = [
     .setDescription('Poste le panneau de vérification Roblox.')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
+    .setName('verification-check')
+    .setDescription("Renomme les membres déjà vérifiés avec leur pseudo Roblox.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .setContexts(InteractionContextType.Guild),
+  new SlashCommandBuilder()
     .setName('who-is')
     .setDescription('Recherche une liaison Discord ou Roblox.')
     .setDefaultMemberPermissions(0)
@@ -55,6 +62,7 @@ export const robloxVerificationCommands = [
 
 const robloxCache = new Map();
 const profileCache = new Map();
+const nicknameChecksInProgress = new Set();
 
 async function robloxJson(url, options = {}) {
   let response;
@@ -157,9 +165,56 @@ export async function createRobloxVerificationIntegration({
         INDEX idx_expires (expires_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS nickname_sync_guilds (
+        guild_id   VARCHAR(20) PRIMARY KEY,
+        enabled_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
   }
 
   await ensureTables();
+
+  async function isGuildEnrolled(guildId) {
+    if (!pool) return false;
+    const [rows] = await pool.execute(
+      'SELECT guild_id FROM nickname_sync_guilds WHERE guild_id = ? LIMIT 1',
+      [guildId],
+    );
+    return rows.length > 0;
+  }
+
+  async function getLinkByDiscordId(discordUserId) {
+    if (!pool) return null;
+    const [rows] = await pool.execute(
+      'SELECT discord_user_id, roblox_user_id, roblox_username FROM roblox_discord_links WHERE discord_user_id = ? LIMIT 1',
+      [discordUserId],
+    );
+    return rows[0] || null;
+  }
+
+  async function enrollGuild(guildId) {
+    if (!pool) return;
+    await pool.execute(
+      'INSERT IGNORE INTO nickname_sync_guilds (guild_id) VALUES (?)',
+      [guildId],
+    );
+  }
+
+  async function sendNicknameCheckResult(interaction, payload) {
+    try {
+      await interaction.editReply(payload);
+    } catch (error) {
+      console.error('[NicknameSync] Unable to edit deferred reply:', error.message);
+      try {
+        await interaction.channel?.send(payload);
+        await interaction.deleteReply().catch(() => {});
+      } catch (sendError) {
+        console.error('[NicknameSync] Unable to send result in channel:', sendError.message);
+      }
+    }
+  }
+
   async function hasVerificationAccess(interaction) {
     return hasGuildPermission({
       client,
@@ -295,6 +350,131 @@ export async function createRobloxVerificationIntegration({
           .setStyle(ButtonStyle.Primary),
       ),
     }));
+  }
+
+  async function verificationNicknameCheck(interaction) {
+    if (!interaction.inGuild() || !interaction.guild) {
+      await interaction.reply(createV2EphemeralError('Cette commande ne fonctionne que dans un serveur.'));
+      return;
+    }
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      await interaction.reply({
+        content: 'Seuls les administrateurs peuvent utiliser cette commande.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    if (!pool) {
+      await interaction.reply(createV2EphemeralError('La base de données est temporairement indisponible.'));
+      return;
+    }
+
+    const guild = interaction.guild;
+    const botMember = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+    if (!botMember?.permissions.has(PermissionFlagsBits.ManageNicknames)) {
+      await interaction.reply(createV2EphemeralError(
+        'Je n’ai pas la permission de gérer les surnoms sur ce serveur.',
+      ));
+      return;
+    }
+
+    if (nicknameChecksInProgress.has(guild.id)) {
+      await interaction.reply(createV2EphemeralError(
+        'Une vérification des membres est déjà en cours sur ce serveur.',
+        'Vérification en cours',
+      ));
+      return;
+    }
+
+    nicknameChecksInProgress.add(guild.id);
+    try {
+      if (guild.memberCount > 1000) {
+        await interaction.reply(createV2Message({
+          title: 'Vérification des membres',
+          description: 'Le serveur a trop de membres, vérifier les membres un par un prendrait trop de puissance.',
+        }));
+        return;
+      }
+
+      await interaction.deferReply();
+
+      let members;
+      try {
+        members = await guild.members.fetch({ time: 120_000, force: true });
+      } catch (error) {
+        console.error('[NicknameSync] Unable to fetch guild members:', error.message);
+        await sendNicknameCheckResult(interaction, createV2Message({
+          title: 'Vérification des membres',
+          description: 'La récupération des membres du serveur a expiré. Réessaie plus tard.',
+        }));
+        return;
+      }
+
+      const humans = [...members.values()].filter((member) => !member.user.bot);
+      let verified = 0;
+      let renamed = 0;
+      let hasNickname = 0;
+      let notManageable = 0;
+
+      if (humans.length) {
+        let rows;
+        try {
+          const placeholders = humans.map(() => '?').join(', ');
+          [rows] = await pool.execute(
+            `SELECT discord_user_id, roblox_username FROM roblox_discord_links WHERE discord_user_id IN (${placeholders})`,
+            humans.map((member) => member.id),
+          );
+        } catch (error) {
+          console.error('[NicknameSync] Unable to load verified links:', error.message);
+          await sendNicknameCheckResult(interaction, createV2Message({
+            title: 'Vérification des membres',
+            description: 'Impossible de récupérer les membres vérifiés depuis la base de données.',
+          }));
+          return;
+        }
+
+        const links = new Map(rows.map((row) => [String(row.discord_user_id), row]));
+        for (const member of humans) {
+          const link = links.get(member.id);
+          if (!link) continue;
+          verified += 1;
+          try {
+            const result = await syncNickname(member, link.roblox_username);
+            if (result === 'renamed') renamed += 1;
+            else if (result === 'has_nickname') hasNickname += 1;
+            else if (result === 'not_manageable') notManageable += 1;
+          } catch (error) {
+            console.error(`[NicknameSync] Unable to rename ${member.id}:`, error.message);
+            notManageable += 1;
+          }
+        }
+      }
+
+      await enrollGuild(guild.id).catch((error) => {
+        console.error('[NicknameSync] Unable to enroll guild:', error.message);
+      });
+
+      console.log('[NicknameSync] Check complete:', {
+        guildId: guild.id,
+        humans: humans.length,
+        verified,
+        renamed,
+        hasNickname,
+        notManageable,
+      });
+
+      const description = `${verified}/${humans.length} ont été vérifiés, ${hasNickname} ont été vérifiés, mais ils ne peuvent pas être renommés car ils ont déjà un surnom sur le serveur Discord.`;
+      const sections = notManageable > 0
+        ? [`${notManageable} membres vérifiés n'ont pas pu être renommés (hiérarchie des rôles ou permissions du bot).`]
+        : [];
+      await sendNicknameCheckResult(interaction, createV2Message({
+        title: 'Vérification des membres',
+        description,
+        sections,
+      }));
+    } finally {
+      nicknameChecksInProgress.delete(guild.id);
+    }
   }
 
   async function verificationStart(interaction) {
@@ -589,6 +769,10 @@ export async function createRobloxVerificationIntegration({
       return true;
     }
     if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'verification-check') {
+        await verificationNicknameCheck(interaction);
+        return true;
+      }
       if (![guildId, VERIFICATION_GUILD_ID].includes(interaction.guildId)) return false;
       if (interaction.commandName === 'verification-panel') {
         await verificationPanel(interaction);
