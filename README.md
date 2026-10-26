@@ -13,6 +13,7 @@
 - `/purgecasier utilisateur:<membre> raison:<raison>` : purge entièrement le casier de modération enregistré d’une personne.
 - `/retireravertissement utilisateur:<membre> avertissement:<id>` : retire un avertissement précis affiché dans le casier de modération.
 - `/expulsion utilisateur:<membre> raison:<raison>` : expulse l’utilisateur de tous les serveurs où le bot est présent.
+- `/activity statut:<Aurafarm|Développement|Arrêter>` : déclare l'activité du membre (rôle `1545983245034852362` requis), reflétée sur la rich presence du bot quand il se trouve dans le salon vocal suivi.
 
 
 ### Présentation des messages
@@ -35,6 +36,24 @@ Les messages du salon `1546138245363007518` sont surveillés pour notifier par D
 
 Les bannissements enregistrent les noms exacts des serveurs concernés dans `moderation_bans`. Lors d’un débannissement, ces noms sont envoyés en message privé puis les entrées sont supprimées.
 
+## Statut vocal dynamique (rich presence)
+
+Le bot met à jour sa propre rich presence (activité **Watching** avec l'image RPC) en fonction des membres humains présents dans le salon vocal `1561485674149060689` (configurable via `VOICE_ACTIVITY_CHANNEL_ID`). Les bots sont ignorés.
+
+La phrase dynamique est placée dans le **nom** de l'activité (le statut visible est `Watching <phrase>`) : c'est la seule partie affichée dans la liste des membres, un `details` n'y serait pas visible.
+
+- Un membre : `Watching Alice est en train d'aurafarm depuis 5 minutes` ou `Watching Alice est en train de développer`.
+- Deux membres (même activité) : `Alice et Bob sont en train d'aurafarm depuis 5 minutes` (durée du dernier arrivé) ou `Alice et Bob sont en train de développer`.
+- Trois membres ou plus : `Plusieurs personnes sont en train d'aurafarm` / `... de développer` (activité majoritaire).
+- Activités mixtes ou inconnues : un repli neutre `… est en train de voc'` est affiché.
+- Personne dans le salon : un placeholder tourne toutes les 5 minutes (`I love you`, `There might be a time where you wouldn't see me`, `Est-ce que des gens lisent ça ?`) pour laisser le bot au calme. `VOICE_ACTIVITY_DEFAULT_NAME` remplace ce placeholder par un texte fixe.
+
+L'activité de chaque utilisateur est opt-in via `/activity`, réservé au rôle `1545983245034852362` (et aux administrateurs). L'API Discord n'expose pas ce que font les gens. Les dates d'entrée sont suivies par `voiceStateUpdate` ; après un redémarrage, l'appartenance au salon est reconstruite sans inventer d'horodatage historique (la durée n'est donc pas affichée jusqu'à la prochaine entrée). Les logs `[VoiceActivity]` indiquent chaque entrée/sortie et chaque présence publiée pour diagnostiquer.
+
+La présence est envoyée via le paquet gateway `PresenceUpdate` brut (les assets RPC sont ignorés par `setActivity` de discord.js). L'image doit être téléversée dans les assets Rich Presence de l'application (Discord Developer Portal → Rich Presence → Art Assets) ; par défaut c'est `182D7D51-2F44-477A-8505-AC972CF2E8ED`, surchargeable via `VOICE_ACTIVITY_RPC_IMAGE` (si l'image n'apparaît pas, utiliser l'ID numérique de l'asset depuis le portail).
+
+Le bot a besoin de l'intent `GuildVoiceStates` (déjà déclaré) et doit avoir accès au salon cible.
+
 ## Variables d'environnement
 
 - `DISCORD_TOKEN` : token du bot Discord (obligatoire).
@@ -44,6 +63,13 @@ Les bannissements enregistrent les noms exacts des serveurs concernés dans `mod
 - `MYSQL_USER` : utilisateur MySQL (obligatoire).
 - `MYSQL_PASSWORD` : mot de passe MySQL (obligatoire).
 - `MYSQL_DATABASE` : nom de la base de données (obligatoire).
+- `VOICE_ACTIVITY_CHANNEL_ID` : salon vocal cible (défaut : `1561485674149060689`).
+- `VOICE_ACTIVITY_DEFAULT_NAME` : placeholder fixe quand le salon est vide (remplace la rotation, optionnel).
+- `VOICE_ACTIVITY_ROTATE_MS` : intervalle de rotation du placeholder (défaut : `300000`, soit 5 minutes).
+- `VOICE_ACTIVITY_RPC_IMAGE` : asset image de la rich presence (défaut : `182D7D51-2F44-477A-8505-AC972CF2E8ED`).
+- `VOICE_ACTIVITY_RPC_LARGE_TEXT` : infobulle de l'image RPC (optionnel).
+- `VOICE_ACTIVITY_RPC_STATE` : seconde ligne de la rich presence (optionnel).
+- `VOICE_ACTIVITY_REFRESH_MS` : fréquence de rafraîchissement de la durée affichée (défaut : `60000`).
 
 ## Installation et démarrage
 

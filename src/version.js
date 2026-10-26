@@ -8,7 +8,7 @@
  *   - MAJOR (V.01 -> V.1.0): a breaking change, removed feature, or schema change
  *     that requires manual action on the host (env vars, migrations, uploads).
  */
-export const BOT_VERSION = 'FPCSBOT V.11';
+export const BOT_VERSION = 'FPCSBOT V.12';
 
 export function printVersionBanner(component = BOT_VERSION) {
   console.log('========================================');

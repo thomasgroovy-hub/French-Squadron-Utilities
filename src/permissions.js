@@ -3,6 +3,7 @@ import { PermissionFlagsBits } from 'discord.js';
 export const MODERATION_ROLE_ID = '1487266203864006707';
 export const SUPER_ADMIN_ROLE_ID = '1518410191933014057';
 export const ROBLOX_LOOKUP_ROLE_ID = '1545975254277558282';
+export const ACTIVITY_ROLE_ID = '1545983245034852362';
 
 export function hasDiscordAdministrator(member) {
   return Boolean(member?.permissions?.has(PermissionFlagsBits.Administrator));

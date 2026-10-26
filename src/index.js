@@ -24,6 +24,10 @@ import {
   createRobloxVerificationIntegration,
   robloxVerificationCommands,
 } from './roblox-verification.js';
+import {
+  createVoiceActivityIntegration,
+  voiceActivityCommands,
+} from './voice-activity.js';
 import { printVersionBanner } from './version.js';
 
 printVersionBanner();
@@ -35,6 +39,7 @@ const commands = [
 
   ...robloxVerificationCommands,
   ...moderationCommands,
+  ...voiceActivityCommands,
 ];
 
 const databasePool = createDatabasePool();
@@ -70,6 +75,12 @@ robloxVerificationIntegration.syncSiteMirror();
 const moderationIntegration = createModerationIntegration({
   client,
   pool: databasePool,
+});
+
+// Dynamically reflects the humans hanging out in the trigger voice channel
+// on the bot's own profile status.
+const voiceActivityIntegration = createVoiceActivityIntegration({
+  client,
 });
 
 const permadeathIntegration = createPermadeathNotificationIntegration({
@@ -232,6 +243,17 @@ client.once(Events.ClientReady, (readyClient) => {
 
   void moderationIntegration.initializeDatabase();
 
+  // The gateway is up: rebuild the trigger channel's membership from the
+  // cached voice states (no historical join timestamps are invented), then
+  // start listening and push the first status.
+  try {
+    voiceActivityIntegration.syncFromVoiceStates();
+  } catch (error) {
+    console.error('[VoiceActivity] Initial membership sync failed:', error);
+  }
+  voiceActivityIntegration.start();
+  void voiceActivityIntegration.applyStatus();
+
   // Only once the gateway is up can the relay resolve the target channel, so a
   // backlog accumulated while the bot was down goes out after login.
   strikeEventRelay.start();
@@ -258,6 +280,13 @@ client.on(Events.InteractionCreate, (interaction) => {
       await moderationIntegration.handleInteraction(interaction)
     ) {
       console.log('[Discord] Interaction handled by moderation integration.');
+      return;
+    }
+
+    if (
+      await voiceActivityIntegration.handleInteraction(interaction)
+    ) {
+      console.log('[Discord] Interaction handled by voice activity integration.');
       return;
     }
 
@@ -322,6 +351,7 @@ async function shutdown(signal) {
   );
 
   strikeEventRelay.stop();
+  voiceActivityIntegration.stop();
   client.destroy();
 
   process.exit(0);
