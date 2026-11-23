@@ -49,3 +49,11 @@ test('warnings record the server where they were issued', () => {
   assert.match(moderationSource, /interaction\.guild\?\.name/);
   assert.match(moderationSource, /logField\('Serveur'/);
 });
+
+test('every moderation case records the server where it was issued', () => {
+  assert.match(moderationSource, /moderation_cases_guild_id_idx/);
+  assert.match(moderationSource, /INSERT INTO \$\{CASE_TABLE\} \(discord_id, type, moderator_discord_id, raison, guild_id, guild_name\) VALUES \(\?, \?, \?, \?, \?, \?\)/);
+  assert.match(moderationSource, /'exclusion', interaction, reason/);
+  assert.match(moderationSource, /'bannissement', interaction, reason/);
+  assert.match(moderationSource, /'expulsion', interaction, reason/);
+});

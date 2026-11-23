@@ -107,6 +107,7 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
   let databaseReady = false;
   let databaseInitialization;
   let strikeGuildColumnsReady = false;
+  let caseGuildColumnsReady = false;
 
   async function hasModerationAccess(interaction) {
     const guildIds = [...new Set([interaction.guildId, MODERATION_GUILD_ID].filter(Boolean))];
@@ -134,25 +135,39 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
     return false;
   }
 
-  async function ensureStrikeGuildColumns() {
+  function interactionGuildContext(interaction) {
+    const guildId = interaction.guildId || null;
+    return {
+      guildId,
+      guildName: interaction.guild?.name || (guildId ? client.guilds.cache.get(guildId)?.name : null) || null,
+    };
+  }
+
+  function withSourceGuildField(interaction, fields) {
+    const { guildId, guildName } = interactionGuildContext(interaction);
+    if (!guildName && !guildId) return fields;
+    return [...fields, logField('Serveur', guildName ? `${guildName} (${guildId})` : guildId)];
+  }
+
+  async function ensureGuildColumns(table, indexName) {
     try {
-      const [columns] = await pool.query(`SHOW COLUMNS FROM ${STRIKE_TABLE}`);
+      const [columns] = await pool.query(`SHOW COLUMNS FROM ${table}`);
       const columnNames = new Set((columns || []).map((column) => column.Field));
       const [indexes] = await pool.query(
-        `SHOW INDEX FROM ${STRIKE_TABLE} WHERE Key_name = 'strikes_guild_id_idx'`,
+        `SHOW INDEX FROM ${table} WHERE Key_name = '${indexName}'`,
       );
       const alterations = [];
       if (!columnNames.has('guild_id')) alterations.push('ADD COLUMN guild_id VARCHAR(20) NULL');
       if (!columnNames.has('guild_name')) alterations.push('ADD COLUMN guild_name VARCHAR(120) NULL');
-      if (!(indexes || []).length) alterations.push('ADD INDEX strikes_guild_id_idx (guild_id)');
+      if (!(indexes || []).length) alterations.push(`ADD INDEX ${indexName} (guild_id)`);
       if (alterations.length) {
-        await pool.query(`ALTER TABLE ${STRIKE_TABLE} ${alterations.join(', ')}`);
+        await pool.query(`ALTER TABLE ${table} ${alterations.join(', ')}`);
       }
-      const [updatedColumns] = await pool.query(`SHOW COLUMNS FROM ${STRIKE_TABLE}`);
+      const [updatedColumns] = await pool.query(`SHOW COLUMNS FROM ${table}`);
       const updatedNames = new Set((updatedColumns || []).map((column) => column.Field));
       return updatedNames.has('guild_id') && updatedNames.has('guild_name');
     } catch (error) {
-      console.warn('[Moderation] Unable to add source-server columns to strikes:', error.message);
+      console.warn(`[Moderation] Unable to add source-server columns to ${table}:`, error.message);
       return false;
     }
   }
@@ -184,8 +199,11 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
             type VARCHAR(32) NOT NULL,
             moderator_discord_id VARCHAR(20) NOT NULL,
             raison VARCHAR(1000) NOT NULL,
+            guild_id VARCHAR(20) NULL,
+            guild_name VARCHAR(120) NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX moderation_cases_discord_id_idx (discord_id)
+            INDEX moderation_cases_discord_id_idx (discord_id),
+            INDEX moderation_cases_guild_id_idx (guild_id)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
         await pool.query(`
@@ -197,7 +215,8 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
             PRIMARY KEY (discord_id, guild_id)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
-        strikeGuildColumnsReady = await ensureStrikeGuildColumns();
+        strikeGuildColumnsReady = await ensureGuildColumns(STRIKE_TABLE, 'strikes_guild_id_idx');
+        caseGuildColumnsReady = await ensureGuildColumns(CASE_TABLE, 'moderation_cases_guild_id_idx');
         databaseReady = true;
         return true;
       } catch (error) {
@@ -249,10 +268,18 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
   }
 
   async function recordCase(discordId, type, interaction, reason) {
-    await pool.execute(
-      `INSERT INTO ${CASE_TABLE} (discord_id, type, moderator_discord_id, raison) VALUES (?, ?, ?, ?)`,
-      [discordId, type, interaction.user.id, reason],
-    );
+    const { guildId, guildName } = interactionGuildContext(interaction);
+    if (caseGuildColumnsReady && guildId) {
+      await pool.execute(
+        `INSERT INTO ${CASE_TABLE} (discord_id, type, moderator_discord_id, raison, guild_id, guild_name) VALUES (?, ?, ?, ?, ?, ?)`,
+        [discordId, type, interaction.user.id, reason, guildId, guildName],
+      );
+    } else {
+      await pool.execute(
+        `INSERT INTO ${CASE_TABLE} (discord_id, type, moderator_discord_id, raison) VALUES (?, ?, ?, ?)`,
+        [discordId, type, interaction.user.id, reason],
+      );
+    }
   }
 
   function formatRemainingTimeout(timestamp) {
@@ -276,8 +303,7 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
     if (!(await ensureDatabase(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
-    const guildId = interaction.guildId || null;
-    const guildName = interaction.guild?.name || client.guilds.cache.get(guildId)?.name || null;
+    const { guildId, guildName } = interactionGuildContext(interaction);
     try {
       if (strikeGuildColumnsReady && guildId) {
         await pool.execute(
@@ -309,10 +335,7 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
         logField('Modérateur', moderatorLabel(interaction)),
         logField('Raison', reason),
       ];
-      if (guildName || guildId) {
-        logFields.push(logField('Serveur', guildName ? `${guildName} (${guildId})` : guildId));
-      }
-      await sendLog('AVERTISSEMENT', `${target} a reçu un avertissement.`, logFields);
+      await sendLog('AVERTISSEMENT', `${target} a reçu un avertissement.`, withSourceGuildField(interaction, logFields));
     } catch (error) {
       console.error('[Moderation] Unable to create warning:', error.message);
       await safeEditReply(interaction, createV2Message({
@@ -380,11 +403,11 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
       sections: [`**Raison :** ${reason}`],
     }));
     await recordCase(target.id, 'exclusion', interaction, reason);
-    await sendLog('EXCLUSION', `${target} est exclu pour ${duration.label}.`, [
+    await sendLog('EXCLUSION', `${target} est exclu pour ${duration.label}.`, withSourceGuildField(interaction, [
       logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
       logField('Résultat', `Réussi sur ${succeeded} serveur(s), échoué sur ${failed}`, true),
-    ]);
+    ]));
   }
 
   async function handleGlobalBan(interaction) {
@@ -437,12 +460,12 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
       description: `${target} a été banni de la communauté.\n**Modérateur :** ${moderatorLabel(interaction)}`,
       sections: [`**Raison :** ${reason}`],
     }));
-    await sendLog('BAN GLOBAL', `${target} a été banni de la communauté.`, [
+    await sendLog('BAN GLOBAL', `${target} a été banni de la communauté.`, withSourceGuildField(interaction, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
       logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
-    ]);
+    ]));
   }
 
   async function handleUntimeout(interaction) {
@@ -544,12 +567,12 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
       description: `${target} a été expulsé de ${succeeded} serveur(s).\n**Modérateur :** ${moderatorLabel(interaction)}`,
       sections: [`**Raison :** ${reason}`, `**Résultat :** ${succeeded} réussi(s), ${failed} échec(s)`],
     }));
-    await sendLog('EXPULSION', `${target} a été expulsé de tous les serveurs possibles.`, [
+    await sendLog('EXPULSION', `${target} a été expulsé de tous les serveurs possibles.`, withSourceGuildField(interaction, [
       logField('Cible', `${target} (${target.id})`),
       logField('Modérateur', moderatorLabel(interaction)),
       logField('Raison', reason),
       logField('Résultat', `${succeeded} réussi(s), ${failed} échec(s)`, true),
-    ]);
+    ]));
   }
 
   async function handleRemoveWarning(interaction) {
