@@ -106,6 +106,7 @@ function parseTimeoutDuration(value) {
 export function createModerationIntegration({ client, pool = createDatabasePool() }) {
   let databaseReady = false;
   let databaseInitialization;
+  let strikeGuildColumnsReady = false;
 
   async function hasModerationAccess(interaction) {
     const guildIds = [...new Set([interaction.guildId, MODERATION_GUILD_ID].filter(Boolean))];
@@ -133,8 +134,32 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
     return false;
   }
 
+  async function ensureStrikeGuildColumns() {
+    try {
+      const [columns] = await pool.query(`SHOW COLUMNS FROM ${STRIKE_TABLE}`);
+      const columnNames = new Set((columns || []).map((column) => column.Field));
+      const [indexes] = await pool.query(
+        `SHOW INDEX FROM ${STRIKE_TABLE} WHERE Key_name = 'strikes_guild_id_idx'`,
+      );
+      const alterations = [];
+      if (!columnNames.has('guild_id')) alterations.push('ADD COLUMN guild_id VARCHAR(20) NULL');
+      if (!columnNames.has('guild_name')) alterations.push('ADD COLUMN guild_name VARCHAR(120) NULL');
+      if (!(indexes || []).length) alterations.push('ADD INDEX strikes_guild_id_idx (guild_id)');
+      if (alterations.length) {
+        await pool.query(`ALTER TABLE ${STRIKE_TABLE} ${alterations.join(', ')}`);
+      }
+      const [updatedColumns] = await pool.query(`SHOW COLUMNS FROM ${STRIKE_TABLE}`);
+      const updatedNames = new Set((updatedColumns || []).map((column) => column.Field));
+      return updatedNames.has('guild_id') && updatedNames.has('guild_name');
+    } catch (error) {
+      console.warn('[Moderation] Unable to add source-server columns to strikes:', error.message);
+      return false;
+    }
+  }
+
   async function initializeDatabase() {
     if (!pool) return false;
+
     if (databaseReady) return true;
     if (databaseInitialization) return databaseInitialization;
     databaseInitialization = (async () => {
@@ -145,8 +170,11 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
             discord_id VARCHAR(20) NOT NULL,
             moderator_discord_id VARCHAR(20) NOT NULL,
             raison VARCHAR(1000) NOT NULL,
+            guild_id VARCHAR(20) NULL,
+            guild_name VARCHAR(120) NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX strikes_discord_id_idx (discord_id)
+            INDEX strikes_discord_id_idx (discord_id),
+            INDEX strikes_guild_id_idx (guild_id)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
         await pool.query(`
@@ -169,6 +197,7 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
             PRIMARY KEY (discord_id, guild_id)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
+        strikeGuildColumnsReady = await ensureStrikeGuildColumns();
         databaseReady = true;
         return true;
       } catch (error) {
@@ -247,11 +276,20 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
     if (!(await ensureDatabase(interaction))) return;
     const target = interaction.options.getUser('utilisateur', true);
     const reason = interaction.options.getString('raison', true).trim();
+    const guildId = interaction.guildId || null;
+    const guildName = interaction.guild?.name || client.guilds.cache.get(guildId)?.name || null;
     try {
-      await pool.execute(
-        `INSERT INTO ${STRIKE_TABLE} (discord_id, moderator_discord_id, raison) VALUES (?, ?, ?)`,
-        [target.id, interaction.user.id, reason],
-      );
+      if (strikeGuildColumnsReady && guildId) {
+        await pool.execute(
+          `INSERT INTO ${STRIKE_TABLE} (discord_id, moderator_discord_id, raison, guild_id, guild_name) VALUES (?, ?, ?, ?, ?)`,
+          [target.id, interaction.user.id, reason, guildId, guildName],
+        );
+      } else {
+        await pool.execute(
+          `INSERT INTO ${STRIKE_TABLE} (discord_id, moderator_discord_id, raison) VALUES (?, ?, ?)`,
+          [target.id, interaction.user.id, reason],
+        );
+      }
       try {
         await target.send(createV2Message({
           title: 'Un avertissement vous a été attribué',
@@ -266,11 +304,15 @@ export function createModerationIntegration({ client, pool = createDatabasePool(
         description: `${target} a reçu un avertissement.\n**Modérateur :** ${moderatorLabel(interaction)}`,
         sections: [`**Raison :** ${reason}`],
       }));
-      await sendLog('AVERTISSEMENT', `${target} a reçu un avertissement.`, [
+      const logFields = [
         logField('Cible', `${target} (${target.id})`),
         logField('Modérateur', moderatorLabel(interaction)),
         logField('Raison', reason),
-      ]);
+      ];
+      if (guildName || guildId) {
+        logFields.push(logField('Serveur', guildName ? `${guildName} (${guildId})` : guildId));
+      }
+      await sendLog('AVERTISSEMENT', `${target} a reçu un avertissement.`, logFields);
     } catch (error) {
       console.error('[Moderation] Unable to create warning:', error.message);
       await safeEditReply(interaction, createV2Message({

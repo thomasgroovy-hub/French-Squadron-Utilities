@@ -41,3 +41,11 @@ test('who-is exposes a permission-checked moderation case file', () => {
   assert.match(verificationSource, /Voir le casier de modération/);
   assert.match(verificationSource, /allowedRoleIds: \[UNLINK_ROLE_ID, MODERATION_ROLE_ID/);
 });
+
+test('warnings record the server where they were issued', () => {
+  assert.match(moderationSource, /guild_id VARCHAR\(20\) NULL/);
+  assert.match(moderationSource, /ADD COLUMN guild_id VARCHAR\(20\) NULL/);
+  assert.match(moderationSource, /INSERT INTO \$\{STRIKE_TABLE\} \(discord_id, moderator_discord_id, raison, guild_id, guild_name\) VALUES \(\?, \?, \?, \?, \?\)/);
+  assert.match(moderationSource, /interaction\.guild\?\.name/);
+  assert.match(moderationSource, /logField\('Serveur'/);
+});
